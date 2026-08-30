@@ -97,6 +97,80 @@ export async function undoLastGroup(gameId: string): Promise<boolean> {
   })
 }
 
+/**
+ * Undo the final whistle.
+ *
+ * Voiding the PERIOD_END alone is not enough: the clock is derived from
+ * wall-clock timestamps, so with the end removed it would resume having counted
+ * every minute since — a game reopened an hour later would show an hour more
+ * played. A compensating correction puts it back to what it read at the whistle
+ * and pauses it there, so the coach restarts play when they are ready.
+ */
+export async function reopenGame(gameId: string): Promise<boolean> {
+  return db.transaction('rw', db.events, async () => {
+    const all = (await db.events.where('gameId').equals(gameId).toArray()).sort(
+      (a, b) => a.seq - b.seq,
+    )
+    const voided = new Set<number>()
+    for (const e of all) if (e.body.type === 'VOID') voided.add(e.body.seq)
+    const alive = all.filter((e) => e.body.type !== 'VOID' && !voided.has(e.seq))
+
+    let end: GameEvent | undefined
+    for (let i = alive.length - 1; i >= 0; i--) {
+      const e = alive[i]!
+      if (e.body.type === 'PERIOD_END') {
+        end = e
+        break
+      }
+    }
+    if (!end) return false
+
+    // Only correct if the clock was actually running when the period ended;
+    // if it was already paused, no time has accrued to take back.
+    let running = false
+    for (const e of alive) {
+      if (e.seq >= end.seq) break
+      const t = e.body.type
+      if (t === 'PERIOD_START' || t === 'CLOCK_RESUME') running = true
+      else if (t === 'PERIOD_END' || t === 'CLOCK_PAUSE') running = false
+    }
+
+    const now = Date.now()
+    const gapSec = running ? Math.max(0, (now - end.wallAt) / 1000) : 0
+    let seq = all.reduce((m, x) => Math.max(m, x.seq), 0)
+    const rows: GameEvent[] = [
+      {
+        id: newId('ev'),
+        gameId,
+        seq: ++seq,
+        wallAt: now,
+        t: end.t,
+        body: { type: 'VOID', seq: end.seq },
+      },
+    ]
+    if (gapSec > 0) {
+      rows.push({
+        id: newId('ev'),
+        gameId,
+        seq: ++seq,
+        wallAt: now,
+        t: end.t,
+        body: { type: 'CLOCK_ADJUST', deltaSec: -gapSec, reason: 'reopened' },
+      })
+    }
+    rows.push({
+      id: newId('ev'),
+      gameId,
+      seq: ++seq,
+      wallAt: now,
+      t: end.t,
+      body: { type: 'CLOCK_PAUSE' },
+    })
+    await db.events.bulkAdd(rows)
+    return true
+  })
+}
+
 export function eventsOf(gameId: string): Promise<GameEvent[]> {
   return db.events.where('gameId').equals(gameId).toArray()
 }

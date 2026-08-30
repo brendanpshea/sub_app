@@ -29,6 +29,7 @@ import type { Formation, GameEventBody, Pin, Player, SlotId } from '@/domain/typ
 import { displayName, fullName } from '@/domain/types'
 import Pitch, { type SlotFill } from '../components/Pitch'
 import LineupEditor from '../components/LineupEditor'
+import PlayingTime from '../components/PlayingTime'
 import Sheet from '../components/Sheet'
 import { useNow, useWakeLock } from '../hooks/useLive'
 
@@ -377,14 +378,33 @@ export default function Live() {
     }
 
     await appendMany(gameId, bodies, s!.cumulativeSec)
-    if (game!.status !== 'live') await updateGame(gameId, { status: 'live' })
+    if (game!.status !== 'live') {
+      // The scheduled time is a guess; this is when the whistle actually went.
+      await updateGame(gameId, {
+        status: 'live',
+        ...(game!.startedAt ? {} : { startedAt: Date.now() }),
+      })
+    }
   }
 
+  /**
+   * Ending a period is confirmed because it is one tap from ending the game,
+   * and the alert band that offers it is a large target near the top of the
+   * screen — easy to catch by accident while reaching for the clock.
+   */
   async function endPeriod() {
+    const last = s!.period >= rules.periodCount
+    const asked = last
+      ? confirm(
+          `End the game?\n\n${minutes(s!.cumulativeSec)} played. You can reopen it afterwards if this was a mistake.`,
+        )
+      : confirm(`End Q${s!.period}? ${mmss(s!.periodElapsedSec)} played this quarter.`)
+    if (!asked) return
+
     await appendMany(gameId, [{ type: 'PERIOD_END', period: s!.period }], s!.cumulativeSec)
     setMenu(false)
-    if (s!.period >= rules.periodCount) {
-      await updateGame(gameId, { status: 'final' })
+    if (last) {
+      await updateGame(gameId, { status: 'final', endedAt: Date.now() })
     }
   }
 
@@ -549,6 +569,16 @@ export default function Live() {
     setToast(arriving ? 'Added to the game' : 'Plan adjusted')
     window.setTimeout(() => setToast(null), 2200)
   }
+  /** One tap. Saves are the keeper's line on the sheet, and they come fast. */
+  async function logSave() {
+    const keeper = gkSlotId ? s!.onField[gkSlotId] : undefined
+    if (!keeper) return
+    await appendMany(gameId, [{ type: 'SAVE', playerId: keeper }], s!.cumulativeSec)
+    setMenu(false)
+    setToast(`Save — ${show(keeper)}`)
+    window.setTimeout(() => setToast(null), 1800)
+  }
+
   async function logGoal(playerId: string | null, assistId: string | null) {
     const body: GameEventBody = { type: 'GOAL' }
     if (playerId) body.playerId = playerId
@@ -689,7 +719,23 @@ export default function Live() {
             />
           </>
         ) : s.status === 'final' ? (
-          <FinalSummary state={s} roster={available} target={shareNow} />
+          <>
+            <div className="empty" style={{ paddingBottom: '0.8rem' }}>
+              <strong>Full time</strong>
+              {s.goalCount} {s.goalCount === 1 ? 'goal' : 'goals'} ·{' '}
+              {minutes(s.cumulativeSec)} played
+            </div>
+            <PlayingTime state={s} roster={available} share={shareNow} />
+            <div className="btn-row" style={{ marginTop: '1.2rem' }}>
+              <button
+                type="button"
+                className="btn brand"
+                onClick={() => nav(`/team/${teamId}/game/${gameId}/recap`)}
+              >
+                Full summary
+              </button>
+            </div>
+          </>
         ) : (
           <>
             <Pitch
@@ -1250,6 +1296,21 @@ export default function Live() {
             <button
               type="button"
               className="row"
+              disabled={!(gkSlotId && s.onField[gkSlotId])}
+              onClick={() => void logSave()}
+            >
+              <span className="grow">
+                <span className="name">Save</span>
+                <span className="meta">
+                  {gkSlotId && s.onField[gkSlotId]
+                    ? `Credited to ${show(s.onField[gkSlotId])}`
+                    : 'Nobody is in goal'}
+                </span>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="row"
               onClick={() => {
                 setMenu(false)
                 setWhoIsHere(true)
@@ -1321,56 +1382,6 @@ export default function Live() {
 }
 
 // ---------------------------------------------------------------- final
-
-function FinalSummary({
-  state,
-  roster,
-  target,
-}: {
-  state: LiveState
-  roster: Player[]
-  target: Map<string, number>
-}) {
-  const out = outfieldPlayed(state)
-  const sorted = [...roster].sort(
-    (a, b) => (state.playedSec.get(b.id) ?? 0) - (state.playedSec.get(a.id) ?? 0),
-  )
-  return (
-    <>
-      <div className="empty" style={{ paddingBottom: '1rem' }}>
-        <strong>Full time</strong>
-        {state.goalCount} {state.goalCount === 1 ? 'goal' : 'goals'} ·{' '}
-        {minutes(state.cumulativeSec)} played
-      </div>
-      <div className="card">
-        {sorted.map((p) => {
-          const gk = state.gkSec.get(p.id) ?? 0
-          const field = out.get(p.id) ?? 0
-          // Measured on field time, because that is what the team shares out.
-          // Goal duty is its own rotation, so a keeper reading "+7:00 over"
-          // would be a reproach for doing exactly what was asked of them.
-          const dev = field - (target.get(p.id) ?? 0)
-          return (
-            <div className="final-line" key={p.id}>
-              <span>{fullName(p)}</span>
-              <b>
-                {minutes(field)}
-                {gk > 30 ? (
-                  <span className="dim"> + {minutes(gk)} goal</span>
-                ) : null}{' '}
-                <span className={`deficit ${Math.abs(dev) <= 100 ? 'ok' : dev < 0 ? 'owed' : 'over'}`}>
-                  {dev >= 0 ? '+' : '−'}
-                  {mmss(Math.abs(dev))}
-                </span>
-              </b>
-            </div>
-          )
-        })}
-      </div>
-    </>
-  )
-}
-
 /** A one-line reminder of what tapping Start will actually change. */
 function BreakChanges({
   diff,

@@ -49,7 +49,6 @@ export interface LiveState {
   keeperSpans: KeeperSpan[]
   goals: Map<ID, number>
   assists: Map<ID, number>
-  shots: Map<ID, number>
   saves: Map<ID, number>
   goalCount: number
   /** Game-clock second each surviving event happened at. */
@@ -92,7 +91,6 @@ export function deriveLive(
     keeperSpans: [],
     goals: new Map(),
     assists: new Map(),
-    shots: new Map(),
     saves: new Map(),
     goalCount: 0,
     timeOf: new Map(),
@@ -221,10 +219,6 @@ export function deriveLive(
         state.goalCount += 1
         if (e.body.playerId) bump(state.goals, e.body.playerId)
         if (e.body.assistId) bump(state.assists, e.body.assistId)
-        break
-
-      case 'SHOT':
-        bump(state.shots, e.body.playerId)
         break
 
       case 'SAVE':

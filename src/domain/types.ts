@@ -147,6 +147,13 @@ export interface Game {
   rules: GameRules //             snapshot — league rules vary by opponent
   attendance: Attendance[]
   status: GameStatus
+  /**
+   * When the match actually kicked off and finished, as opposed to when it was
+   * scheduled. Set from the clock, because a fixture rarely starts on time and
+   * the record should say what happened.
+   */
+  startedAt?: number
+  endedAt?: number
   createdAt: number
 }
 
@@ -186,7 +193,6 @@ export type GameEventBody =
   | { type: 'OFF'; playerId: ID; slotId: SlotId }
   | { type: 'MOVE'; playerId: ID; fromSlotId: SlotId; toSlotId: SlotId }
   | { type: 'GOAL'; playerId?: ID; assistId?: ID } // ours only — the ref keeps the score
-  | { type: 'SHOT'; playerId: ID }
   | { type: 'SAVE'; playerId: ID }
   | { type: 'NOTE'; text: string }
   | { type: 'VOID'; seq: number } // undo = append, never delete
@@ -218,7 +224,6 @@ export interface PlayerGameStats {
   stints: number
   goals: number
   assists: number
-  shots: number
   saves: number
 }
 
@@ -235,7 +240,6 @@ export interface PlayerSeasonStats {
   carriedDeficitSec: number
   goals: number
   assists: number
-  shots: number
   saves: number
 }
 

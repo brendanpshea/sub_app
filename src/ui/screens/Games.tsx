@@ -12,11 +12,9 @@ function localDateValue(d: Date): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
-function nextSaturday(): Date {
-  const d = new Date()
-  d.setHours(9, 0, 0, 0)
-  d.setDate(d.getDate() + ((6 - d.getDay() + 7) % 7 || 7))
-  return d
+function timeValue(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
 function describeKickoff(ms: number): string {
@@ -27,6 +25,24 @@ function describeKickoff(ms: number): string {
     hour: 'numeric',
     minute: '2-digit',
   })
+}
+
+/**
+ * What to say about a fixture.
+ *
+ * Before it is played the scheduled time is all there is; afterwards the times
+ * that matter are the ones the clock recorded, because a fixture rarely starts
+ * when it was meant to.
+ */
+function describeGame(g: Game): string {
+  if (g.status === 'final' && g.startedAt) {
+    const played =
+      g.endedAt && g.endedAt > g.startedAt
+        ? ` · ${Math.round((g.endedAt - g.startedAt) / 60000)} min`
+        : ''
+    return `${describeKickoff(g.startedAt)}${played}`
+  }
+  return `${describeKickoff(g.kickoffAt)} · ${countIn(g)} available`
 }
 
 function countIn(g: Game): number {
@@ -44,8 +60,10 @@ export default function Games() {
 
   const [adding, setAdding] = useState(false)
   const [opponent, setOpponent] = useState('')
-  const [date, setDate] = useState(() => localDateValue(nextSaturday()))
-  const [time, setTime] = useState('09:00')
+  // Most games are entered as they are about to be played, so now is the
+  // useful default; a fixture planned for next week is a change away.
+  const [date, setDate] = useState(() => localDateValue(new Date()))
+  const [time, setTime] = useState(() => timeValue(new Date()))
   const [homeAway, setHomeAway] = useState<Game['homeAway']>('home')
 
   async function save() {
@@ -89,17 +107,18 @@ export default function Games() {
               <Link
                 key={g.id}
                 className="row"
-                // A game in progress goes straight to the pitch — on match day
-                // nobody wants to tap through a settings screen first.
-                to={`/team/${teamId}/game/${g.id}${g.status === 'live' ? '/live' : ''}`}
+                // A game in progress goes straight to the pitch, and a
+                // finished one to its summary. Neither should land on a setup
+                // screen offering to start a match that is already over.
+                to={`/team/${teamId}/game/${g.id}${
+                  g.status === 'live' ? '/live' : g.status === 'final' ? '/recap' : ''
+                }`}
               >
                 <span className="grow">
                   <span className="name">
                     {g.homeAway === 'home' ? 'v' : 'at'} {g.opponent}
                   </span>
-                  <span className="meta">
-                    {describeKickoff(g.kickoffAt)} · {countIn(g)} available
-                  </span>
+                  <span className="meta">{describeGame(g)}</span>
                 </span>
                 <span className={`pill ${g.status}`}>{g.status}</span>
                 <span className="chev" aria-hidden="true">

@@ -82,6 +82,21 @@ export default function GameSetup() {
         back={`/team/${teamId}/games`}
       />
       <main>
+        {game.status === 'final' ? (
+          <div className="card pad" style={{ marginBottom: '0.8rem' }}>
+            <div className="dim">This game has been played.</div>
+            <div className="btn-row">
+              <button
+                type="button"
+                className="btn brand"
+                onClick={() => nav(`/team/${teamId}/game/${gameId}/recap`)}
+              >
+                See the summary
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         <div className={`summary${shortHanded ? ' warn' : ''}`}>
           <span className="big">{inCount}</span>
           <span className="cap">
