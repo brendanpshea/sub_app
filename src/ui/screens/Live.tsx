@@ -134,6 +134,10 @@ export default function Live() {
   const nextShift = peeked?.period === s.period ? peeked : undefined
 
   const gkSlotId = formation.slots.find((sl) => sl.requiredRole === 'GK')?.id
+  const slotLabel = (id: SlotId): string =>
+    formation.slots.find((x) => x.id === id)?.label ?? ''
+  const slotGroup = (id: SlotId): string =>
+    formation.slots.find((x) => x.id === id)?.group ?? 'MID'
 
   const lineupOpts = {
     slots: formation.slots,
@@ -160,6 +164,18 @@ export default function Live() {
         : null
   const activeSub = showSubSheet || manualSub ? nextChange : null
 
+  /** Who the next change brings on. Known as soon as there is a plan, not
+   *  only in the last minute, so a coach can warn them in good time. */
+  const comingOn = new Set<string>(
+    nextChange
+      ? [
+          ...nextChange.diff.swaps.map((w) => w.on),
+          ...nextChange.diff.onOnly.map((o) => o.playerId),
+          ...(nextChange.diff.keeper ? [nextChange.diff.keeper.on] : []),
+        ]
+      : [],
+  )
+
   const untilNext = nextShift
     ? secondsUntilShift(nextShift, rules, s.periodElapsedSec)
     : periodSec - s.periodElapsedSec
@@ -185,11 +201,7 @@ export default function Live() {
     .filter((p) => !onFieldIds.has(p.id))
     .sort((a, b) => owedSec(b.id) - owedSec(a.id))
 
-  const onDeck = new Set(
-    untilNext <= ON_DECK_LEAD_SEC && nextShift
-      ? Object.values(nextShift.assignments).filter((id) => !onFieldIds.has(id))
-      : [],
-  )
+
 
   // ---------------------------------------------------------------- lineup
 
@@ -674,28 +686,79 @@ export default function Live() {
             />
 
             <div className="bench-strip">
-              {onDeck.size > 0 ? (
-                <div className="bench-row">
-                  <span className="lab">On deck</span>
-                  {[...onDeck].map((id) => (
-                    <span key={id} className="bchip2 deck">
-                      {show(id)}
-                      <em>{minutes(s.playedSec.get(id) ?? 0)}</em>
-                    </span>
-                  ))}
-                </div>
-              ) : null}
               <div className="bench-row">
                 <span className="lab">Bench</span>
                 {bench.map((p) => (
-                  <span key={p.id} className="bchip2">
+                  <span
+                    key={p.id}
+                    className={`bchip2${comingOn.has(p.id) ? ' deck' : ''}`}
+                  >
                     {displayName(p, available)}
-                    <em>{minutes(s.playedSec.get(p.id) ?? 0)}</em>
+                    <em>{comingOn.has(p.id) ? 'next on' : minutes(s.playedSec.get(p.id) ?? 0)}</em>
                   </span>
                 ))}
                 {bench.length === 0 ? <span className="dim">Everyone is on</span> : null}
               </div>
             </div>
+
+            {nextChange ? (
+              <div className={`nextsub${untilNext <= ON_DECK_LEAD_SEC ? ' soon' : ''}`}>
+                <div className="nextsub-head">
+                  <span>Next sub</span>
+                  <span className="when">
+                    {nextChange.index === shiftIdx
+                      ? 'due now'
+                      : `in ${mmss(Math.max(0, untilNext))}`}
+                  </span>
+                </div>
+                {nextChange.diff.keeper ? (
+                  <div className="nextsub-row">
+                    <span className="pos GK">GK</span>
+                    <span className="who off">{show(nextChange.diff.keeper.off)}</span>
+                    <span className="arr" aria-hidden="true">
+                      &rarr;
+                    </span>
+                    <span className="who on">{show(nextChange.diff.keeper.on)}</span>
+                  </div>
+                ) : null}
+                {nextChange.diff.swaps.map((sw) => (
+                  <div className="nextsub-row" key={`${sw.off}-${sw.on}`}>
+                    <span className={`pos ${slotGroup(sw.offSlot)}`}>
+                      {slotLabel(sw.offSlot)}
+                    </span>
+                    <span className="who off">{show(sw.off)}</span>
+                    <span className="arr" aria-hidden="true">
+                      &rarr;
+                    </span>
+                    <span className="who on">{show(sw.on)}</span>
+                  </div>
+                ))}
+                {nextChange.diff.offOnly.map((o) => (
+                  <div className="nextsub-row" key={o.playerId}>
+                    <span className={`pos ${slotGroup(o.slotId)}`}>
+                      {slotLabel(o.slotId)}
+                    </span>
+                    <span className="who off">{show(o.playerId)}</span>
+                    <span className="arr" aria-hidden="true">
+                      &rarr;
+                    </span>
+                    <span className="who">bench</span>
+                  </div>
+                ))}
+                {nextChange.diff.onOnly.map((o) => (
+                  <div className="nextsub-row" key={o.playerId}>
+                    <span className={`pos ${slotGroup(o.slotId)}`}>
+                      {slotLabel(o.slotId)}
+                    </span>
+                    <span className="who">bench</span>
+                    <span className="arr" aria-hidden="true">
+                      &rarr;
+                    </span>
+                    <span className="who on">{show(o.playerId)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
 
             <button
               type="button"
@@ -766,8 +829,11 @@ export default function Live() {
                     {show(sw.off)}
                     <em>{minutes(s.playedSec.get(sw.off) ?? 0)} played</em>
                   </button>
-                  <span className="arrow" aria-hidden="true">
-                    &rarr;
+                  <span className="arrow">
+                    <em className={`pos ${slotGroup(sw.offSlot)}`}>
+                      {slotLabel(sw.offSlot)}
+                    </em>
+                    <span aria-hidden="true">&rarr;</span>
                   </span>
                   <button
                     type="button"
@@ -785,14 +851,24 @@ export default function Live() {
                     {show(o.playerId)}
                     <em>{minutes(s.playedSec.get(o.playerId) ?? 0)} played</em>
                   </span>
-                  <span className="arrow">&rarr;</span>
+                  <span className="arrow">
+                    <em className={`pos ${slotGroup(o.slotId)}`}>
+                      {slotLabel(o.slotId)}
+                    </em>
+                    <span aria-hidden="true">&rarr;</span>
+                  </span>
                   <span className="side">bench</span>
                 </div>
               ))}
               {diff.onOnly.map((o) => (
                 <div className="swap" key={o.playerId}>
                   <span className="side">bench</span>
-                  <span className="arrow">&rarr;</span>
+                  <span className="arrow">
+                    <em className={`pos ${slotGroup(o.slotId)}`}>
+                      {slotLabel(o.slotId)}
+                    </em>
+                    <span aria-hidden="true">&rarr;</span>
+                  </span>
                   <span className="side on">
                     {show(o.playerId)}
                     <em>{minutes(s.playedSec.get(o.playerId) ?? 0)} played</em>

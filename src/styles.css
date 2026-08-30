@@ -613,6 +613,114 @@ textarea {
   margin: 0 auto 0.7rem;
 }
 
+/* ---------------------------------------------------------------- next sub */
+
+/* Always on screen while a change is pending, not only in the last minute:
+   knowing who is coming on, for whom, and where, is what lets a coach warn
+   the child in time rather than shouting at the whistle. */
+.nextsub {
+  margin-top: 0.7rem;
+  padding: 0.55rem 0.7rem 0.65rem;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+}
+
+.nextsub.soon {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.nextsub-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 0.45rem;
+}
+
+.nextsub.soon .nextsub-head {
+  color: var(--accent);
+}
+
+.nextsub-head .when {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.nextsub-row {
+  display: grid;
+  grid-template-columns: 40px 1fr 20px 1fr;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.22rem 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+}
+
+.nextsub-row .who {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nextsub-row .who.off {
+  color: var(--ink-2);
+}
+
+.nextsub-row .who.on {
+  color: var(--ink);
+  font-weight: 750;
+}
+
+.nextsub-row .arr {
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 0.9rem;
+}
+
+/* Position tag, coloured by line so it reads the same as the plan chart. */
+.pos {
+  display: inline-block;
+  min-width: 34px;
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-style: normal;
+  letter-spacing: 0.04em;
+  text-align: center;
+  color: #fff;
+  background: #3a6f96;
+}
+
+.pos.DEF {
+  background: #2f6f4f;
+}
+.pos.MID {
+  background: #3a6f96;
+}
+.pos.FWD {
+  background: #a8543f;
+}
+.pos.GK {
+  background: #c99a12;
+  color: #241b02;
+}
+
+/* In the substitution sheet the tag sits above the arrow, between the two
+   names, because both players occupy that one position. */
+.swap .arrow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
 /* ---------------------------------------------------------------- attendance */
 
 .att {
