@@ -125,19 +125,7 @@ export default function Games() {
           </label>
 
           <div className="field">
-            <span
-              style={{
-                display: 'block',
-                fontSize: '0.72rem',
-                fontWeight: 700,
-                letterSpacing: '0.1em',
-                textTransform: 'uppercase',
-                color: 'var(--ink-3)',
-                marginBottom: '0.3rem',
-              }}
-            >
-              Where
-            </span>
+            <div className="field-label">Where</div>
             <div className="chips">
               <button
                 type="button"

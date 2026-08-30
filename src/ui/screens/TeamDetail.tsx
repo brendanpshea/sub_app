@@ -1,6 +1,6 @@
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, deleteTeam } from '@/db/db'
+import { db, deleteTeam, teamFootprint } from '@/db/db'
 import { BUILT_IN_FORMATIONS, findFormation } from '@/domain/formations'
 import { gameLengthSec } from '@/domain/types'
 import AppBar from '../components/AppBar'
@@ -56,7 +56,24 @@ export default function TeamDetail() {
       : 0
 
   async function removeTeam() {
-    if (!confirm(`Delete ${team!.name} and all of its games? This cannot be undone.`)) return
+    const f = await teamFootprint(teamId)
+    const parts = [
+      `${f.players} player${f.players === 1 ? '' : 's'}`,
+      `${f.games} game${f.games === 1 ? '' : 's'}`,
+    ]
+    if (f.events > 0) parts.push(`${f.events} logged events`)
+    const warn = [
+      `Delete ${team!.name}?`,
+      '',
+      `This permanently removes ${parts.join(', ')}. It cannot be undone.`,
+      '',
+      'Export a backup first if you might want any of it back.',
+    ].join('\n')
+    if (!confirm(warn)) return
+    // Two taps for anything with real history in it.
+    if (f.games > 0 && !confirm(`Really delete ${team!.name} and its ${f.games} games?`)) {
+      return
+    }
     await deleteTeam(teamId)
     nav('/', { replace: true })
   }
@@ -74,7 +91,8 @@ export default function TeamDetail() {
               <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{formation.name}</div>
               <div className="dim">
                 {team.rules.playersOnField}v{team.rules.playersOnField} ·{' '}
-                {team.rules.periodCount} × {team.rules.periodMinutes} min
+                {gameLengthSec(team.rules) / 60} min ({team.rules.periodCount} ×{' '}
+                {team.rules.periodMinutes})
               </div>
               <div className="dim" style={{ marginTop: '0.4rem' }}>
                 {active.length} available ·{' '}
@@ -95,7 +113,7 @@ export default function TeamDetail() {
               <span className="name">Roster</span>
               <span className="meta">
                 {active.length} active
-                {keepers.length > 0 ? ` · ${keepers.length} will play in goal` : ''}
+                {keepers.length > 0 ? ` · ${keepers.length} can go in goal` : ''}
               </span>
             </span>
             <span className="chev" aria-hidden="true">
@@ -106,6 +124,18 @@ export default function TeamDetail() {
             <span className="grow">
               <span className="name">Formation</span>
               <span className="meta">{formation.name}</span>
+            </span>
+            <span className="chev" aria-hidden="true">
+              ›
+            </span>
+          </Link>
+          <Link className="row" to={`/team/${teamId}/rules`}>
+            <span className="grow">
+              <span className="name">Match rules</span>
+              <span className="meta">
+                {gameLengthSec(team.rules) / 60} min · sub every{' '}
+                {team.rules.shiftMinutes} min
+              </span>
             </span>
             <span className="chev" aria-hidden="true">
               ›

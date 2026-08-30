@@ -17,7 +17,7 @@ function player(id: string, active = true): Player {
   return {
     id,
     teamId: 't',
-    name: id,
+    firstName: id,
     active,
     gk: 'willing',
     preferredGroups: [],

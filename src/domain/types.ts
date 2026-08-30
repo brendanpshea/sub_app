@@ -71,7 +71,8 @@ export type GkWillingness = 'never' | 'willing' | 'preferred'
 export interface Player {
   id: ID
   teamId: ID
-  name: string //                 short display name — must read at arm's length
+  firstName: string
+  lastName?: string
   number?: number
   active: boolean
   gk: GkWillingness
@@ -239,6 +240,32 @@ export interface PlayerSeasonStats {
 
 export function emptyGroupRecord(): Record<PositionGroup, number> {
   return { GK: 0, DEF: 0, MID: 0, FWD: 0 }
+}
+
+/** Full name, for rosters and reports. */
+export function fullName(p: Player): string {
+  return p.lastName ? `${p.firstName} ${p.lastName}` : p.firstName
+}
+
+/**
+ * What goes on a player chip.
+ *
+ * First names only, because that is what a coach shouts and what fits on a
+ * chip — but two Harrisons on one squad is common, so a surname initial is
+ * added exactly when it is needed to tell them apart.
+ */
+export function displayName(p: Player, squad: Player[]): string {
+  const clash = squad.some(
+    (o) => o.id !== p.id && o.firstName.toLowerCase() === p.firstName.toLowerCase(),
+  )
+  if (!clash) return p.firstName
+  const initial = p.lastName?.trim().charAt(0)
+  return initial ? `${p.firstName} ${initial.toUpperCase()}.` : p.firstName
+}
+
+/** Sort key: surname when known, so the roster reads like a team sheet. */
+export function nameSortKey(p: Player): string {
+  return `${p.firstName} ${p.lastName ?? ''}`.toLowerCase()
 }
 
 /** Total game length in seconds, from the rules snapshot. */

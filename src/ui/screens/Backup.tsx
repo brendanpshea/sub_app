@@ -39,9 +39,8 @@ export default function Backup() {
       <main>
         <div className="card pad">
           <div className="dim">
-            Everything lives on this device only — nothing is sent anywhere. That keeps
-            it working on a field with no signal, but it also means a lost phone is a
-            lost season. Export after each game.
+            Everything lives on this device only. A lost phone is a lost season —
+            export after each game.
           </div>
           {summary ? (
             <div className="dim" style={{ marginTop: '0.7rem' }}>
@@ -85,8 +84,7 @@ export default function Backup() {
         />
 
         <div className="dim" style={{ marginTop: '1rem', padding: '0 0.2rem' }}>
-          Restoring merges by record, so bringing a backup onto a second device adds
-          what is missing rather than wiping what is already there.
+          Restoring merges rather than replaces.
         </div>
       </main>
     </>

@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { addPlayer, db, deletePlayer, updatePlayer } from '@/db/db'
+import { addPlayer, db, deletePlayer, rosterOf, updatePlayer } from '@/db/db'
 import type { GkWillingness, PositionGroup, Player } from '@/domain/types'
+import { fullName, nameSortKey } from '@/domain/types'
 import AppBar from '../components/AppBar'
 import Sheet from '../components/Sheet'
 
@@ -28,35 +29,38 @@ function summarise(p: Player): string {
     bits.push(p.preferredGroups.map((g) => GROUP_SHORT[g]).join('/'))
   if (p.avoidGroups.length)
     bits.push(`not ${p.avoidGroups.map((g) => GROUP_SHORT[g]).join('/')}`)
-  if (!p.active) bits.push('inactive')
+  if (!p.active) bits.push('Inactive')
   return bits.join(' · ') || 'No constraints'
+}
+
+function FieldLabel({ children }: { children: string }) {
+  return <div className="field-label">{children}</div>
 }
 
 export default function Roster() {
   const { teamId = '' } = useParams()
   const team = useLiveQuery(() => db.teams.get(teamId), [teamId])
-  const players = useLiveQuery(
-    () => db.players.where('teamId').equals(teamId).sortBy('name'),
-    [teamId],
-  )
+  const players = useLiveQuery(() => rosterOf(teamId), [teamId])
 
   const [editing, setEditing] = useState<Player | null>(null)
   const [adding, setAdding] = useState(false)
-  const [newName, setNewName] = useState('')
+  const [first, setFirst] = useState('')
+  const [last, setLast] = useState('')
 
   async function createPlayer() {
-    const n = newName.trim()
-    if (!n) return
-    const p = await addPlayer(teamId, n)
-    setNewName('')
-    setAdding(false)
-    setEditing(p)
+    const f = first.trim()
+    if (!f) return
+    await addPlayer(teamId, f, last)
+    setFirst('')
+    setLast('')
   }
 
   const sorted = (players ?? []).slice().sort((a, b) => {
     if (a.active !== b.active) return a.active ? -1 : 1
-    return a.name.localeCompare(b.name)
+    return nameSortKey(a).localeCompare(nameSortKey(b))
   })
+
+  const active = sorted.filter((p) => p.active)
 
   return (
     <>
@@ -74,11 +78,10 @@ export default function Roster() {
         {players === undefined ? null : sorted.length === 0 ? (
           <div className="empty">
             <strong>No players yet</strong>
-            Add everyone on the team. You can set who plays in goal and who avoids
-            which positions afterwards.
+            Add everyone on the team. Positions and goalkeeping come after.
             <div className="btn-row" style={{ marginTop: '1.2rem' }}>
               <button type="button" className="btn primary" onClick={() => setAdding(true)}>
-                Add your first player
+                Add a player
               </button>
             </div>
           </div>
@@ -93,10 +96,10 @@ export default function Roster() {
                 style={p.active ? undefined : { opacity: 0.55 }}
               >
                 <span className={`num-badge${p.gk === 'preferred' ? ' gk' : ''}`}>
-                  {p.number ?? p.name.slice(0, 1).toUpperCase()}
+                  {p.number ?? p.firstName.charAt(0).toUpperCase()}
                 </span>
                 <span className="grow">
-                  <span className="name">{p.name}</span>
+                  <span className="name">{fullName(p)}</span>
                   <span className="meta">{summarise(p)}</span>
                 </span>
                 <span className="chev" aria-hidden="true">
@@ -109,22 +112,39 @@ export default function Roster() {
 
         {sorted.length > 0 ? (
           <div className="dim" style={{ marginTop: '0.9rem', padding: '0 0.2rem' }}>
-            {sorted.filter((p) => p.active).length} active ·{' '}
-            {sorted.filter((p) => p.active && p.gk !== 'never').length} will go in goal
+            {active.length} active · {active.filter((p) => p.gk !== 'never').length} can
+            go in goal
           </div>
         ) : null}
       </main>
 
       {adding ? (
-        <Sheet title="Add player" onClose={() => setAdding(false)}>
+        <Sheet
+          title="Add players"
+          onClose={() => {
+            setAdding(false)
+            setFirst('')
+            setLast('')
+          }}
+        >
           <label className="field">
-            <span>Name</span>
+            <span>First name</span>
             <input
               type="text"
               autoFocus
-              value={newName}
-              placeholder="First name is usually enough"
-              onChange={(e) => setNewName(e.target.value)}
+              value={first}
+              onChange={(e) => setFirst(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void createPlayer()
+              }}
+            />
+          </label>
+          <label className="field">
+            <span>Last name — optional</span>
+            <input
+              type="text"
+              value={last}
+              onChange={(e) => setLast(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') void createPlayer()
               }}
@@ -133,11 +153,14 @@ export default function Roster() {
           <button
             type="button"
             className="btn primary wide"
-            disabled={!newName.trim()}
+            disabled={!first.trim()}
             onClick={() => void createPlayer()}
           >
             Add
           </button>
+          <div className="dim" style={{ marginTop: '0.6rem', textAlign: 'center' }}>
+            The sheet stays open so you can add the whole squad.
+          </div>
         </Sheet>
       ) : null}
 
@@ -145,6 +168,7 @@ export default function Roster() {
         <PlayerEditor
           key={editing.id}
           player={editing}
+          squad={sorted}
           onClose={() => setEditing(null)}
         />
       ) : null}
@@ -154,16 +178,23 @@ export default function Roster() {
 
 // ---------------------------------------------------------------- editor
 
-function PlayerEditor({ player, onClose }: { player: Player; onClose: () => void }) {
+function PlayerEditor({
+  player,
+  squad,
+  onClose,
+}: {
+  player: Player
+  squad: Player[]
+  onClose: () => void
+}) {
   const [p, setP] = useState<Player>(player)
 
   function patch(next: Partial<Player>) {
-    const merged = { ...p, ...next }
-    setP(merged)
+    setP({ ...p, ...next })
     void updatePlayer(p.id, next)
   }
 
-  /** Preferred and avoid are mutually exclusive per group — picking one clears the other. */
+  /** Prefers and avoids are mutually exclusive — picking one clears the other. */
   function toggleGroup(list: 'preferredGroups' | 'avoidGroups', g: PositionGroup) {
     const other = list === 'preferredGroups' ? 'avoidGroups' : 'preferredGroups'
     const has = p[list].includes(g)
@@ -174,29 +205,49 @@ function PlayerEditor({ player, onClose }: { player: Player; onClose: () => void
   }
 
   async function remove() {
-    if (!confirm(`Remove ${p.name} from the roster?`)) return
+    if (!confirm(`Remove ${fullName(p)} from the roster?`)) return
     await deletePlayer(p.id)
     onClose()
   }
 
+  const sharesFirstName = squad.some(
+    (o) => o.id !== p.id && o.firstName.toLowerCase() === p.firstName.toLowerCase(),
+  )
+
   return (
-    <Sheet title={p.name || 'Player'} onClose={onClose}>
+    <Sheet title={fullName(p) || 'Player'} onClose={onClose}>
       <label className="field">
-        <span>Name</span>
+        <span>First name</span>
         <input
           type="text"
-          value={p.name}
-          onChange={(e) => patch({ name: e.target.value })}
+          value={p.firstName}
+          onChange={(e) => patch({ firstName: e.target.value })}
         />
       </label>
 
       <label className="field">
-        <span>Shirt number</span>
+        <span>Last name — optional</span>
+        <input
+          type="text"
+          value={p.lastName ?? ''}
+          onChange={(e) => patch({ lastName: e.target.value || undefined })}
+        />
+      </label>
+
+      {sharesFirstName ? (
+        <div className="dim" style={{ marginTop: '-0.4rem', marginBottom: '0.8rem' }}>
+          {p.lastName
+            ? `Shown as “${p.firstName} ${p.lastName.charAt(0).toUpperCase()}.” during a game.`
+            : `Another ${p.firstName} is on this team. Add a last name to tell them apart.`}
+        </div>
+      ) : null}
+
+      <label className="field">
+        <span>Shirt number — optional</span>
         <input
           type="number"
           inputMode="numeric"
           value={p.number ?? ''}
-          placeholder="Optional"
           onChange={(e) =>
             patch({ number: e.target.value === '' ? undefined : Number(e.target.value) })
           }
@@ -204,19 +255,7 @@ function PlayerEditor({ player, onClose }: { player: Player; onClose: () => void
       </label>
 
       <div className="field">
-        <span
-          style={{
-            display: 'block',
-            fontSize: '0.72rem',
-            fontWeight: 700,
-            letterSpacing: '0.1em',
-            textTransform: 'uppercase',
-            color: 'var(--ink-3)',
-            marginBottom: '0.3rem',
-          }}
-        >
-          Goalkeeper
-        </span>
+        <FieldLabel>Goalkeeper</FieldLabel>
         <div className="chips">
           {GK_OPTIONS.map((o) => (
             <button
@@ -230,26 +269,11 @@ function PlayerEditor({ player, onClose }: { player: Player; onClose: () => void
             </button>
           ))}
         </div>
-        <div className="dim" style={{ marginTop: '0.4rem' }}>
-          Time in goal counts as playing time, so keepers are kept fair by rotating who
-          goes in — not by discounting their minutes.
-        </div>
+        <div className="dim">Time in goal counts as playing time.</div>
       </div>
 
       <div className="field">
-        <span
-          style={{
-            display: 'block',
-            fontSize: '0.72rem',
-            fontWeight: 700,
-            letterSpacing: '0.1em',
-            textTransform: 'uppercase',
-            color: 'var(--ink-3)',
-            marginBottom: '0.3rem',
-          }}
-        >
-          Prefers
-        </span>
+        <FieldLabel>Prefers</FieldLabel>
         <div className="chips">
           {FIELD_GROUPS.map((g) => (
             <button
@@ -266,19 +290,7 @@ function PlayerEditor({ player, onClose }: { player: Player; onClose: () => void
       </div>
 
       <div className="field">
-        <span
-          style={{
-            display: 'block',
-            fontSize: '0.72rem',
-            fontWeight: 700,
-            letterSpacing: '0.1em',
-            textTransform: 'uppercase',
-            color: 'var(--ink-3)',
-            marginBottom: '0.3rem',
-          }}
-        >
-          Avoids
-        </span>
+        <FieldLabel>Avoids</FieldLabel>
         <div className="chips">
           {FIELD_GROUPS.map((g) => (
             <button
@@ -292,14 +304,11 @@ function PlayerEditor({ player, onClose }: { player: Player; onClose: () => void
             </button>
           ))}
         </div>
-        <div className="dim" style={{ marginTop: '0.4rem' }}>
-          A soft preference. If nobody else is available the planner will still use them
-          rather than leave the position empty.
-        </div>
+        <div className="dim">Used only if nobody else can take the position.</div>
       </div>
 
       <label className="field">
-        <span>Max shifts in a row</span>
+        <span>Max shifts in a row — optional</span>
         <input
           type="number"
           inputMode="numeric"
@@ -319,7 +328,6 @@ function PlayerEditor({ player, onClose }: { player: Player; onClose: () => void
         <span>Notes</span>
         <textarea
           value={p.notes ?? ''}
-          placeholder="Tweaked ankle Tuesday · carpools with Mia"
           onChange={(e) => patch({ notes: e.target.value })}
         />
       </label>

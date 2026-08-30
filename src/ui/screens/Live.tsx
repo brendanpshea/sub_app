@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db } from '@/db/db'
+import { db, rosterOf } from '@/db/db'
 import { updateGame } from '@/db/games'
 import { appendMany, eventsOf, undoLastGroup } from '@/db/events'
 import { loadPlan, savePlan } from '@/db/plans'
@@ -23,12 +23,8 @@ import {
   type LiveState,
 } from '@/domain/live'
 import { replanFrom } from '@/domain/planner'
-import type {
-  Formation,
-  GameEventBody,
-  Player,
-  SlotId,
-} from '@/domain/types'
+import type { Formation, GameEventBody, Player, SlotId } from '@/domain/types'
+import { displayName, fullName } from '@/domain/types'
 import Pitch, { type SlotFill } from '../components/Pitch'
 import Sheet from '../components/Sheet'
 import { useNow, useWakeLock } from '../hooks/useLive'
@@ -41,7 +37,7 @@ export default function Live() {
 
   const game = useLiveQuery(() => db.games.get(gameId), [gameId])
   const roster = useLiveQuery(
-    () => db.players.where('teamId').equals(teamId).sortBy('name'),
+    () => rosterOf(teamId),
     [teamId],
   )
   const pairings = useLiveQuery(
@@ -91,6 +87,11 @@ export default function Live() {
   const grid = buildShiftGrid(rules)
   const periodSec = rules.periodMinutes * 60
   const byId = new Map(roster.map((p) => [p.id, p]))
+  /** Shout-ready name: first name unless two players share it. */
+  const show = (id: string): string => {
+    const p = byId.get(id)
+    return p ? displayName(p, available) : '?'
+  }
 
   const shiftIdx =
     s.period > 0 ? currentShiftIndex(grid, rules, s.period, s.periodElapsedSec) : -1
@@ -268,7 +269,7 @@ export default function Live() {
     if (!p) continue
     const target = fullShare.get(playerId) ?? 1
     fill[slotId] = {
-      name: p.name,
+      name: displayName(p, available),
       share: target > 0 ? (s.playedSec.get(playerId) ?? 0) / target : 0,
       tone: toneFor(playerId),
     }
@@ -363,7 +364,7 @@ export default function Live() {
                   <span className="lab">On deck</span>
                   {[...onDeck].map((id) => (
                     <span key={id} className="bchip2 deck">
-                      {byId.get(id)?.name ?? '?'}
+                      {show(id)}
                       <em>{minutes(s.playedSec.get(id) ?? 0)}</em>
                     </span>
                   ))}
@@ -373,7 +374,7 @@ export default function Live() {
                 <span className="lab">Bench</span>
                 {bench.map((p) => (
                   <span key={p.id} className="bchip2">
-                    {p.name}
+                    {displayName(p, available)}
                     <em>{minutes(s.playedSec.get(p.id) ?? 0)}</em>
                   </span>
                 ))}
@@ -398,21 +399,21 @@ export default function Live() {
           {sub.swaps.map((sw) => (
             <div className="swap" key={`${sw.off}-${sw.on}`}>
               <span className="side">
-                {byId.get(sw.off)?.name ?? '?'}
+                {show(sw.off)}
                 <em>{minutes(s.playedSec.get(sw.off) ?? 0)} played</em>
               </span>
               <span className="arrow" aria-hidden="true">
                 →
               </span>
               <span className="side on">
-                {byId.get(sw.on)?.name ?? '?'}
+                {show(sw.on)}
                 <em>owed {mmss(Math.max(0, owedSec(sw.on)))}</em>
               </span>
             </div>
           ))}
           {sub.offOnly.map((o) => (
             <div className="swap" key={o.playerId}>
-              <span className="side">{byId.get(o.playerId)?.name ?? '?'}</span>
+              <span className="side">{show(o.playerId)}</span>
               <span className="arrow">→</span>
               <span className="side">bench</span>
             </div>
@@ -421,13 +422,13 @@ export default function Live() {
             <div className="swap" key={o.playerId}>
               <span className="side">bench</span>
               <span className="arrow">→</span>
-              <span className="side on">{byId.get(o.playerId)?.name ?? '?'}</span>
+              <span className="side on">{show(o.playerId)}</span>
             </div>
           ))}
           {sub.moves.length > 0 ? (
             <div className="dim" style={{ textAlign: 'center', marginTop: '0.4rem' }}>
               Also moving:{' '}
-              {sub.moves.map((m) => byId.get(m.playerId)?.name ?? '?').join(', ')}
+              {sub.moves.map((m) => show(m.playerId)).join(', ')}
             </div>
           ) : null}
 
@@ -447,11 +448,11 @@ export default function Live() {
 
       {pullOff ? (
         <Sheet
-          title={`Sub off ${byId.get(pullOff.playerId)?.name ?? ''}`}
+          title={`Sub off ${show(pullOff.playerId)}`}
           onClose={() => setPullOff(null)}
         >
           <div className="dim" style={{ marginBottom: '0.6rem' }}>
-            Whoever is owed the most time is first.
+            Most owed first.
           </div>
           <div className="card">
             {bench.map((p) => (
@@ -462,7 +463,7 @@ export default function Live() {
                 onClick={() => void unplannedSwap(pullOff.playerId, pullOff.slotId, p.id)}
               >
                 <span className="grow">
-                  <span className="name">{p.name}</span>
+                  <span className="name">{fullName(p)}</span>
                   <span className="meta">
                     {minutes(s.playedSec.get(p.id) ?? 0)} played · owed{' '}
                     {mmss(Math.max(0, owedSec(p.id)))}
@@ -494,7 +495,7 @@ export default function Live() {
                 }}
               >
                 <span className="grow">
-                  <span className="name">{byId.get(id)?.name ?? '?'}</span>
+                  <span className="name">{show(id)}</span>
                 </span>
               </button>
             ))}
@@ -520,7 +521,7 @@ export default function Live() {
                   onClick={() => void logGoal(scorer, id)}
                 >
                   <span className="grow">
-                    <span className="name">{byId.get(id)?.name ?? '?'}</span>
+                    <span className="name">{show(id)}</span>
                   </span>
                 </button>
               ))}
@@ -560,7 +561,7 @@ export default function Live() {
             >
               <span className="grow">
                 <span className="name">Undo last action</span>
-                <span className="meta">Nothing is ever deleted, only cancelled</span>
+                <span className="meta">Cancels the last sub or goal</span>
               </span>
             </button>
             {s.status === 'running' ? (
@@ -631,7 +632,7 @@ function FinalSummary({
           return (
             <div className="final-line" key={p.id}>
               <span>
-                {p.name}
+                {fullName(p)}
                 {gk > 30 ? (
                   <span className="dim"> · {minutes(gk)} in goal</span>
                 ) : null}

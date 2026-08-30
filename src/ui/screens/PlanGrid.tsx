@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db } from '@/db/db'
+import { db, rosterOf } from '@/db/db'
 import { updateRules } from '@/db/games'
 import { isPinned, loadPlan, savePlan, togglePin } from '@/db/plans'
 import { reconcileAttendance } from '@/domain/attendance'
@@ -15,6 +15,7 @@ import {
 } from '@/domain/fairness'
 import { generatePlan } from '@/domain/planner'
 import type { Formation, Pin, PlannedShift, Player, SlotId } from '@/domain/types'
+import { displayName, fullName, nameSortKey } from '@/domain/types'
 import AppBar from '../components/AppBar'
 import Sheet from '../components/Sheet'
 
@@ -28,7 +29,7 @@ export default function PlanGrid() {
 
   const game = useLiveQuery(() => db.games.get(gameId), [gameId])
   const roster = useLiveQuery(
-    () => db.players.where('teamId').equals(teamId).sortBy('name'),
+    () => rosterOf(teamId),
     [teamId],
   )
   const pairings = useLiveQuery(
@@ -233,7 +234,7 @@ export default function PlanGrid() {
                       Math.abs(dev) <= 100 ? 'ok' : dev < 0 ? 'owed' : 'over'
                     return (
                       <tr key={p.id}>
-                        <td className="nm">{p.name}</td>
+                        <td className="nm">{displayName(p, available)}</td>
                         {grid.map((slice, i) => {
                           const shift = plan.shifts[i]
                           const entry = shift
@@ -258,7 +259,7 @@ export default function PlanGrid() {
                                   onClick={() =>
                                     setCell({ shiftIndex: i, slotId: entry[0] })
                                   }
-                                  aria-label={`${p.name}, ${slot.label}, shift ${i + 1}`}
+                                  aria-label={`${fullName(p)}, ${slot.label}, shift ${i + 1}`}
                                 >
                                   {slot.label}
                                 </button>
@@ -376,7 +377,7 @@ function CellSheet({
     .map((id) => roster.get(id))
     .filter((p): p is Player => !!p)
     .filter((p) => (isKeeperSlot ? p.gk !== 'never' : true))
-    .sort((a, b) => a.name.localeCompare(b.name))
+    .sort((a, b) => nameSortKey(a).localeCompare(nameSortKey(b)))
 
   return (
     <Sheet
@@ -402,7 +403,7 @@ function CellSheet({
             aria-pressed={p.id === current}
           >
             <span className="grow">
-              <span className="name">{p.name}</span>
+              <span className="name">{fullName(p)}</span>
               <span className="meta">
                 {p.id === current
                   ? 'Playing here'
@@ -420,7 +421,7 @@ function CellSheet({
       </div>
 
       <div className="dim" style={{ marginTop: '0.7rem' }}>
-        Choosing someone pins the cell, so a re-roll will leave it alone.
+        Picking someone pins the cell.
       </div>
     </Sheet>
   )

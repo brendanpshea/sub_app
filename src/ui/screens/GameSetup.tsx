@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db } from '@/db/db'
+import { db, rosterOf } from '@/db/db'
 import {
   arrivalMarks,
   deleteGame,
@@ -15,9 +15,10 @@ import {
 import { BUILT_IN_FORMATIONS, findFormation } from '@/domain/formations'
 import { fairShareSec, minutes } from '@/domain/fairness'
 import type { Attendance, AttendanceStatus, Player } from '@/domain/types'
-import { gameLengthSec } from '@/domain/types'
+import { fullName, gameLengthSec } from '@/domain/types'
 import AppBar from '../components/AppBar'
 import Pitch from '../components/Pitch'
+import MatchRules from '../components/MatchRules'
 import Sheet from '../components/Sheet'
 
 const SEG: { status: AttendanceStatus; label: string; tone?: string }[] = [
@@ -33,7 +34,7 @@ export default function GameSetup() {
 
   const game = useLiveQuery(() => db.games.get(gameId), [gameId])
   const roster = useLiveQuery(
-    () => db.players.where('teamId').equals(teamId).sortBy('name'),
+    () => rosterOf(teamId),
     [teamId],
   )
   const custom = useLiveQuery(
@@ -168,39 +169,8 @@ export default function GameSetup() {
           </span>
         </button>
 
-        <div className="section-label">Match rules</div>
-        <div className="card pad">
-          <Stepper
-            label="Periods"
-            value={game.rules.periodCount}
-            min={1}
-            max={4}
-            onChange={(v) => void updateRules(gameId, { periodCount: v })}
-          />
-          <Stepper
-            label="Minutes per period"
-            value={game.rules.periodMinutes}
-            min={5}
-            max={45}
-            step={1}
-            onChange={(v) => void updateRules(gameId, { periodMinutes: v })}
-          />
-          <Stepper
-            label="Target shift length"
-            value={game.rules.shiftMinutes}
-            min={1}
-            max={10}
-            onChange={(v) => void updateRules(gameId, { shiftMinutes: v })}
-            hint="How often you aim to sub. Shorter means smaller, more frequent swaps — easier to fit into a throw-in."
-          />
-          <Stepper
-            label="Players on the field"
-            value={game.rules.playersOnField}
-            min={3}
-            max={11}
-            onChange={(v) => void updateRules(gameId, { playersOnField: v })}
-          />
-        </div>
+        <div className="section-label">Match rules — this game only</div>
+        <MatchRules rules={game.rules} onChange={(p) => void updateRules(gameId, p)} />
 
         <div className="btn-row" style={{ marginTop: '1.4rem' }}>
           <button
@@ -320,7 +290,7 @@ function AttendanceRow({
   return (
     <div className={`att${out ? ' out' : ''}`}>
       <div className="att-head">
-        <span className="name">{player?.name ?? 'Unknown player'}</span>
+        <span className="name">{player ? fullName(player) : 'Unknown player'}</span>
         <span className="target">{out ? '—' : minutes(targetSec)}</span>
       </div>
 
@@ -377,67 +347,6 @@ function AttendanceRow({
               {m.label}
             </button>
           ))}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------- stepper
-
-function Stepper({
-  label,
-  value,
-  min,
-  max,
-  step = 1,
-  hint,
-  onChange,
-}: {
-  label: string
-  value: number
-  min: number
-  max: number
-  step?: number
-  hint?: string
-  onChange: (v: number) => void
-}) {
-  return (
-    <div style={{ marginBottom: '0.9rem' }}>
-      <div
-        style={{
-          fontSize: '0.72rem',
-          fontWeight: 700,
-          letterSpacing: '0.1em',
-          textTransform: 'uppercase',
-          color: 'var(--ink-3)',
-          marginBottom: '0.3rem',
-        }}
-      >
-        {label}
-      </div>
-      <div className="stepper">
-        <button
-          type="button"
-          aria-label={`Decrease ${label}`}
-          disabled={value <= min}
-          onClick={() => onChange(Math.max(min, value - step))}
-        >
-          −
-        </button>
-        <span className="val">{value}</span>
-        <button
-          type="button"
-          aria-label={`Increase ${label}`}
-          disabled={value >= max}
-          onClick={() => onChange(Math.min(max, value + step))}
-        >
-          +
-        </button>
-      </div>
-      {hint ? (
-        <div className="dim" style={{ marginTop: '0.3rem', fontSize: '0.78rem' }}>
-          {hint}
         </div>
       ) : null}
     </div>

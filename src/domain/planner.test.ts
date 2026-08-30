@@ -20,7 +20,7 @@ function player(id: string, patch: Partial<Player> = {}): Player {
   return {
     id,
     teamId: 't',
-    name: id,
+    firstName: id,
     active: true,
     gk: 'willing',
     preferredGroups: [],

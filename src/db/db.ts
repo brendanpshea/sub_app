@@ -8,7 +8,7 @@ import type {
   Player,
   Team,
 } from '@/domain/types'
-import { DEFAULT_RULES } from '@/domain/types'
+import { DEFAULT_RULES, nameSortKey } from '@/domain/types'
 import { DEFAULT_FORMATION_ID } from '@/domain/formations'
 import { newId } from '@/domain/ids'
 
@@ -32,6 +32,27 @@ class TouchlineDB extends Dexie {
       plans: 'gameId',
       events: 'id, gameId, [gameId+seq]',
     })
+
+    // v2: names split into first and last, so two Harrisons can be told apart.
+    this.version(2)
+      .stores({
+        players: 'id, teamId, [teamId+active], firstName',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('players')
+          .toCollection()
+          .modify((p: Record<string, unknown>) => {
+            if (typeof p.firstName === 'string') return
+            const parts = String(p.name ?? '')
+              .trim()
+              .split(/\s+/)
+              .filter(Boolean)
+            p.firstName = parts[0] ?? 'Player'
+            if (parts.length > 1) p.lastName = parts.slice(1).join(' ')
+            delete p.name
+          })
+      })
   }
 }
 
@@ -77,13 +98,16 @@ export async function deleteTeam(teamId: string): Promise<void> {
 
 export async function addPlayer(
   teamId: string,
-  name: string,
+  firstName: string,
+  lastName?: string,
   patch: Partial<Player> = {},
 ): Promise<Player> {
+  const last = lastName?.trim()
   const player: Player = {
     id: newId('pl'),
     teamId,
-    name: name.trim(),
+    firstName: firstName.trim(),
+    ...(last ? { lastName: last } : {}),
     active: true,
     gk: 'willing',
     preferredGroups: [],
@@ -108,8 +132,25 @@ export async function deletePlayer(id: string): Promise<void> {
   })
 }
 
-export function rosterOf(teamId: string) {
-  return db.players.where('teamId').equals(teamId).sortBy('name')
+export async function rosterOf(teamId: string): Promise<Player[]> {
+  const all = await db.players.where('teamId').equals(teamId).toArray()
+  return all.sort((a, b) => nameSortKey(a).localeCompare(nameSortKey(b)))
+}
+
+/** What deleting a team would take with it. Shown before it happens. */
+export async function teamFootprint(
+  teamId: string,
+): Promise<{ players: number; games: number; events: number }> {
+  const games = await db.games.where('teamId').equals(teamId).toArray()
+  let events = 0
+  for (const g of games) {
+    events += await db.events.where('gameId').equals(g.id).count()
+  }
+  return {
+    players: await db.players.where('teamId').equals(teamId).count(),
+    games: games.length,
+    events,
+  }
 }
 
 // ---------------------------------------------------------------- pairings
