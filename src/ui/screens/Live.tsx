@@ -27,6 +27,7 @@ import { generatePlan, replanFrom } from '@/domain/planner'
 import type { Formation, GameEventBody, Pin, Player, SlotId } from '@/domain/types'
 import { displayName, fullName } from '@/domain/types'
 import Pitch, { type SlotFill } from '../components/Pitch'
+import LineupEditor from '../components/LineupEditor'
 import Sheet from '../components/Sheet'
 import { useNow, useWakeLock } from '../hooks/useLive'
 
@@ -62,6 +63,10 @@ export default function Live() {
   const [snoozeUntilSec, setSnoozeUntilSec] = useState(0)
   const [whoIsHere, setWhoIsHere] = useState(false)
   const [manualSub, setManualSub] = useState(false)
+  const [namePick, setNamePick] = useState<
+    { kind: 'in' | 'out'; player: string } | { kind: 'keeper' } | null
+  >(null)
+  const [editShiftIdx, setEditShiftIdx] = useState<number | null>(null)
   const [toast, setToast] = useState<string | null>(null)
 
   const formation: Formation =
@@ -122,6 +127,8 @@ export default function Live() {
   const currentShift = shiftIdx >= 0 ? plan?.shifts[shiftIdx] : undefined
   const nextShift = shiftIdx >= 0 ? plan?.shifts[shiftIdx + 1] : undefined
 
+  const gkSlotId = formation.slots.find((sl) => sl.requiredRole === 'GK')?.id
+
   const subOpts = {
     slots: formation.slots,
     avoids: new Map(roster.map((p) => [p.id, p.avoidGroups])),
@@ -177,46 +184,55 @@ export default function Live() {
   // ---------------------------------------------------------------- lineup
 
   const startAssign: Record<SlotId, string> = plan?.shifts[0]?.assignments ?? {}
-  const starters = new Set(Object.values(startAssign))
-  const lineupBench = available
-    .filter((p) => !starters.has(p.id))
-    .sort((a, b) => a.firstName.localeCompare(b.firstName))
+
+  /** First shift of the period about to start, during a break. */
+  const nextPeriodIdx = grid.findIndex((sl) => sl.period === s.period + 1)
+  const breakLineup: Record<SlotId, string> =
+    nextPeriodIdx >= 0 ? (plan?.shifts[nextPeriodIdx]?.assignments ?? {}) : {}
 
   /**
-   * Change one starting position before kick-off.
+   * Put a player into one position of one shift of the plan.
    *
-   * The edited cell is pinned and the rest of the game is re-planned around it,
-   * so choosing a starter never quietly costs anyone their share of the game.
+   * The choice is pinned and the rest of the game re-planned around it, so
+   * overruling the chart never quietly costs the player who was displaced
+   * their share of the game. Everything the coach can edit — the starting
+   * eleven, a period break, a substitution — comes through here.
    */
-  async function setStarter(slotId: SlotId, playerId: string) {
+  async function setLineupAt(shiftIndex: number, slotId: SlotId, playerId: string) {
     if (!plan || !game) return
     const shifts = plan.shifts.map((sh) => ({
       ...sh,
       assignments: { ...sh.assignments },
     }))
-    const first = shifts[0]
-    if (!first) return
+    const target = shifts[shiftIndex]
+    if (!target) return
 
-    const displaced = first.assignments[slotId]
-    const elsewhere = Object.entries(first.assignments).find(
+    const displaced = target.assignments[slotId]
+    const elsewhere = Object.entries(target.assignments).find(
       ([sid, pid]) => pid === playerId && sid !== slotId,
     )
-    first.assignments[slotId] = playerId
+    target.assignments[slotId] = playerId
     if (elsewhere) {
-      // Straight swap, so no position is left empty at kick-off.
+      // Straight swap, so no position is left empty.
       const [otherSlot] = elsewhere
-      if (displaced) first.assignments[otherSlot] = displaced
-      else delete first.assignments[otherSlot]
+      if (displaced) target.assignments[otherSlot] = displaced
+      else delete target.assignments[otherSlot]
     }
 
+    const touched = new Set([slotId, ...(elsewhere ? [elsewhere[0]] : [])])
     const pins: Pin[] = [
-      ...plan.pins.filter((p) => p.shiftIndex !== 0),
-      { shiftIndex: 0, slotId, playerId },
+      ...plan.pins.filter(
+        (pin) => !(pin.shiftIndex === shiftIndex && touched.has(pin.slotId)),
+      ),
+      { shiftIndex, slotId, playerId },
       ...(elsewhere && displaced
-        ? [{ shiftIndex: 0, slotId: elsewhere[0], playerId: displaced }]
+        ? [{ shiftIndex, slotId: elsewhere[0], playerId: displaced }]
         : []),
     ]
 
+    // Once the game is underway the minutes already played are the truth; before
+    // kick-off there are none and the planner should count the plan instead.
+    const started = s!.period > 0
     const result = generatePlan({
       rules: game.rules,
       formation,
@@ -226,37 +242,103 @@ export default function Live() {
       pins,
       seed: plan.seed,
       existing: shifts,
-      fromShiftIndex: 1,
+      fromShiftIndex: shiftIndex + 1,
+      ...(started ? { startingCredit: s!.playedSec } : {}),
     })
     await savePlan(gameId, result.shifts, result.seed, pins)
-    setSlotSheet(null)
   }
 
-  /** A fresh chart, and with it a fresh starting lineup. */
-  async function shuffleLineup() {
-    if (!game) return
+  /** Re-deal the chart from this shift on, dropping any pins it would fight. */
+  async function reshuffleFrom(shiftIndex: number) {
+    if (!game || !plan) return
+    const kept = plan.pins.filter((pin) => pin.shiftIndex < shiftIndex)
+    const started = s!.period > 0
     const result = generatePlan({
       rules: game.rules,
       formation,
       roster: available,
       attendance,
       pairings: pairings ?? [],
-      pins: (plan?.pins ?? []).filter((p) => p.shiftIndex !== 0),
+      pins: kept,
       seed: Math.floor(Math.random() * 2 ** 31),
+      existing: plan.shifts,
+      fromShiftIndex: shiftIndex,
+      ...(started ? { startingCredit: s!.playedSec } : {}),
     })
-    await savePlan(gameId, result.shifts, result.seed, [])
+    await savePlan(gameId, result.shifts, result.seed, kept)
   }
 
   // ---------------------------------------------------------------- actions
 
-  async function startPeriod(period: number) {
-    const bodies: GameEventBody[] = [{ type: 'PERIOD_START', period }]
-    if (period === 1) {
-      const first = plan?.shifts[0]?.assignments ?? {}
-      for (const [slotId, playerId] of Object.entries(first)) {
-        bodies.push({ type: 'ON', playerId, slotId })
+  /**
+   * Translate a planned change into events.
+   *
+   * Off first so the shirts are free, then the goal, then on. The goal is not
+   * an interchangeable shirt — someone has to take the gloves — so a keeper
+   * change is either a trade of places on the field or a straight swap with
+   * the bench, and is the one case where a player staying on changes position.
+   */
+  function eventsForDiff(diff: SubPlan): GameEventBody[] {
+    const offs: GameEventBody[] = []
+    const moves: GameEventBody[] = []
+    const ons: GameEventBody[] = []
+
+    if (diff.keeper) {
+      const k = diff.keeper
+      if (k.tradeSlotId) {
+        moves.push({
+          type: 'MOVE',
+          playerId: k.on,
+          fromSlotId: k.tradeSlotId,
+          toSlotId: k.gkSlotId,
+        })
+        moves.push({
+          type: 'MOVE',
+          playerId: k.off,
+          fromSlotId: k.gkSlotId,
+          toSlotId: k.tradeSlotId,
+        })
+      } else {
+        offs.push({ type: 'OFF', playerId: k.off, slotId: k.gkSlotId })
+        ons.push({ type: 'ON', playerId: k.on, slotId: k.gkSlotId })
       }
     }
+
+    for (const sw of diff.swaps) {
+      offs.push({ type: 'OFF', playerId: sw.off, slotId: sw.offSlot })
+      ons.push({ type: 'ON', playerId: sw.on, slotId: sw.onSlot })
+    }
+    for (const o of diff.offOnly) {
+      offs.push({ type: 'OFF', playerId: o.playerId, slotId: o.slotId })
+    }
+    for (const o of diff.onOnly) {
+      ons.push({ type: 'ON', playerId: o.playerId, slotId: o.slotId })
+    }
+    return [...offs, ...moves, ...ons]
+  }
+
+  /**
+   * Start a period with the lineup the coach settled on during the break.
+   *
+   * PERIOD_START goes first so that a keeper coming on is credited to the
+   * period they are about to play, not the one that just finished. Applying
+   * the changes here rather than after kick-off means play resumes with the
+   * right eleven already on, instead of a substitution prompt appearing the
+   * moment the whistle goes.
+   */
+  async function startPeriod(period: number) {
+    const idx = grid.findIndex((sl) => sl.period === period)
+    const lineup = idx >= 0 ? (plan?.shifts[idx]?.assignments ?? {}) : {}
+    const bodies: GameEventBody[] = [{ type: 'PERIOD_START', period }]
+
+    if (period === 1) {
+      for (const [slotId, playerId] of Object.entries(lineup)) {
+        bodies.push({ type: 'ON', playerId, slotId })
+      }
+    } else {
+      bodies.push(...eventsForDiff(diffToPlan(s!.onField, lineup, subOpts)))
+    }
+
     await appendMany(gameId, bodies, s!.cumulativeSec)
     if (game!.status !== 'live') await updateGame(gameId, { status: 'live' })
   }
@@ -304,50 +386,7 @@ export default function Live() {
   }
 
   async function confirmSub(diff: SubPlan, targetIndex: number, plannedRelSec: number) {
-    const offs: GameEventBody[] = []
-    const moves: GameEventBody[] = []
-    const ons: GameEventBody[] = []
-
-    // The goal is not an interchangeable shirt, so a keeper change is its own
-    // pair of events: either the two trade places on the field, or the gloves
-    // go to someone off the bench and the old keeper comes off.
-    if (diff.keeper) {
-      const k = diff.keeper
-      if (k.tradeSlotId) {
-        moves.push({
-          type: 'MOVE',
-          playerId: k.on,
-          fromSlotId: k.tradeSlotId,
-          toSlotId: k.gkSlotId,
-        })
-        moves.push({
-          type: 'MOVE',
-          playerId: k.off,
-          fromSlotId: k.gkSlotId,
-          toSlotId: k.tradeSlotId,
-        })
-      } else {
-        offs.push({ type: 'OFF', playerId: k.off, slotId: k.gkSlotId })
-        ons.push({ type: 'ON', playerId: k.on, slotId: k.gkSlotId })
-      }
-    }
-
-    // Outfield: only the players actually changing move. Anyone staying on
-    // keeps the position they are already standing in, so a substitution is
-    // two names, not a reshuffle of the whole team.
-    for (const sw of diff.swaps) {
-      offs.push({ type: 'OFF', playerId: sw.off, slotId: sw.offSlot })
-      ons.push({ type: 'ON', playerId: sw.on, slotId: sw.onSlot })
-    }
-    for (const o of diff.offOnly) {
-      offs.push({ type: 'OFF', playerId: o.playerId, slotId: o.slotId })
-    }
-    for (const o of diff.onOnly) {
-      ons.push({ type: 'ON', playerId: o.playerId, slotId: o.slotId })
-    }
-
-    // Off first so the shirts are free, then the goal, then on.
-    await appendMany(gameId, [...offs, ...moves, ...ons], s!.cumulativeSec)
+    await appendMany(gameId, eventsForDiff(diff), s!.cumulativeSec)
     setManualSub(false)
     setSnoozeUntilSec(0)
     const drift = s!.periodElapsedSec - plannedRelSec
@@ -551,63 +590,62 @@ export default function Live() {
               attendance first.
             </div>
           ) : (
-            <>
-              <div className="lineup-head">
-                <div>
-                  <div className="field-label">Starting {rules.playersOnField}</div>
-                  <div className="dim">Tap a position to change it.</div>
-                </div>
-                <button type="button" className="btn" onClick={() => void shuffleLineup()}>
-                  ↻ Shuffle
+            <LineupEditor
+              formation={formation}
+              assignments={startAssign}
+              squad={available}
+              label={`Starting ${rules.playersOnField}`}
+              hint="Tap a position to change it."
+              onPick={(slotId, playerId) => void setLineupAt(0, slotId, playerId)}
+              onShuffle={() => void reshuffleFrom(0)}
+              footer={
+                <button
+                  type="button"
+                  className="cta-big"
+                  disabled={Object.keys(startAssign).length < rules.playersOnField}
+                  onClick={() => void startPeriod(1)}
+                >
+                  KICK OFF
                 </button>
-              </div>
-
-              <Pitch
-                formation={formation}
-                fill={lineupFill}
-                onSlotClick={(slot) =>
-                  setSlotSheet({ slotId: slot.id, playerId: startAssign[slot.id] })
-                }
-              />
-
-              <div className="bench-strip">
-                <div className="bench-row">
-                  <span className="lab">Bench</span>
-                  {lineupBench.map((p) => (
-                    <span key={p.id} className="bchip2">
-                      {displayName(p, available)}
-                    </span>
-                  ))}
-                  {lineupBench.length === 0 ? (
-                    <span className="dim">Everyone starts</span>
-                  ) : null}
-                </div>
-              </div>
-
-              <button
-                type="button"
-                className="cta-big"
-                disabled={Object.keys(startAssign).length < rules.playersOnField}
-                onClick={() => void startPeriod(1)}
-              >
-                KICK OFF
-              </button>
-            </>
+              }
+            />
           )
         ) : s.status === 'break' ? (
-          <div className="empty">
-            <strong>End of Q{s.period}</strong>
-            {minutes(s.cumulativeSec)} played.
-            <div className="btn-row" style={{ marginTop: '1.4rem' }}>
-              <button
-                type="button"
-                className="btn primary"
-                onClick={() => void startPeriod(s.period + 1)}
-              >
-                Start Q{s.period + 1}
-              </button>
+          <>
+            <div
+              className="dim"
+              style={{ textAlign: 'center', marginBottom: '0.7rem' }}
+            >
+              End of Q{s.period} · {minutes(s.cumulativeSec)} played
             </div>
-          </div>
+            <LineupEditor
+              formation={formation}
+              assignments={breakLineup}
+              squad={available}
+              label={`Q${s.period + 1} lineup`}
+              hint="Tap any position to change it, including the goal."
+              minutesOf={(id) => minutes(s.playedSec.get(id) ?? 0)}
+              onPick={(slotId, playerId) =>
+                void setLineupAt(nextPeriodIdx, slotId, playerId)
+              }
+              onShuffle={() => void reshuffleFrom(nextPeriodIdx)}
+              footer={
+                <>
+                  <BreakChanges
+                    diff={diffToPlan(s.onField, breakLineup, subOpts)}
+                    show={show}
+                  />
+                  <button
+                    type="button"
+                    className="cta-big"
+                    onClick={() => void startPeriod(s.period + 1)}
+                  >
+                    START Q{s.period + 1}
+                  </button>
+                </>
+              }
+            />
+          </>
         ) : s.status === 'final' ? (
           <FinalSummary state={s} roster={available} target={fullShare} />
         ) : (
@@ -692,26 +730,38 @@ export default function Live() {
                   <span className="arrow" aria-hidden="true">
                     &#9917;
                   </span>
-                  <span className="side on">
+                  <button
+                    type="button"
+                    className="side on"
+                    onClick={() => setNamePick({ kind: 'keeper' })}
+                  >
                     {show(diff.keeper.on)}
                     <em>{diff.keeper.tradeSlotId ? 'swaps into goal' : 'into goal'}</em>
-                  </span>
+                  </button>
                 </div>
               ) : null}
 
               {diff.swaps.map((sw) => (
                 <div className="swap" key={`${sw.off}-${sw.on}`}>
-                  <span className="side">
+                  <button
+                    type="button"
+                    className="side"
+                    onClick={() => setNamePick({ kind: 'out', player: sw.off })}
+                  >
                     {show(sw.off)}
                     <em>{minutes(s.playedSec.get(sw.off) ?? 0)} played</em>
-                  </span>
+                  </button>
                   <span className="arrow" aria-hidden="true">
                     &rarr;
                   </span>
-                  <span className="side on">
+                  <button
+                    type="button"
+                    className="side on"
+                    onClick={() => setNamePick({ kind: 'in', player: sw.on })}
+                  >
                     {show(sw.on)}
                     <em>{minutes(s.playedSec.get(sw.on) ?? 0)} played</em>
-                  </span>
+                  </button>
                 </div>
               ))}
               {diff.offOnly.map((o) => (
@@ -744,7 +794,12 @@ export default function Live() {
               >
                 &#10003; CONFIRM
               </button>
+              <div className="hint">tap a name to change it</div>
+
               <div className="subacts">
+                <button type="button" onClick={() => setEditShiftIdx(activeSub.index)}>
+                  Change more&hellip;
+                </button>
                 <button type="button" onClick={() => void skipSub()}>
                   Skip
                 </button>
@@ -763,50 +818,141 @@ export default function Live() {
         })()
       ) : null}
 
+      {namePick && activeSub && plan ? (
+        (() => {
+          const idx = activeSub.index
+          const target = plan.shifts[idx]?.assignments ?? {}
+          const slotOf = (pid: string): SlotId | undefined =>
+            Object.entries(target).find(([, x]) => x === pid)?.[0]
+
+          let title = ''
+          let choices: Player[] = []
+          let apply: (playerId: string) => void = () => {}
+
+          if (namePick.kind === 'keeper') {
+            title = 'Who goes in goal?'
+            choices = available.filter((p) => p.gk !== 'never')
+            apply = (pid) => {
+              if (gkSlotId) void setLineupAt(idx, gkSlotId, pid)
+            }
+          } else if (namePick.kind === 'in') {
+            title = `On instead of ${show(namePick.player)}?`
+            const slot = slotOf(namePick.player)
+            choices = available.filter((p) => p.id !== namePick.player)
+            apply = (pid) => {
+              if (slot) void setLineupAt(idx, slot, pid)
+            }
+          } else {
+            title = `Off instead of ${show(namePick.player)}?`
+            // Only players staying on can be swapped into the outgoing role.
+            choices = available.filter(
+              (p) => onFieldIds.has(p.id) && slotOf(p.id) !== undefined,
+            )
+            apply = (pid) => {
+              const slot = slotOf(pid)
+              if (slot) void setLineupAt(idx, slot, namePick.player)
+            }
+          }
+
+          return (
+            <Sheet title={title} onClose={() => setNamePick(null)}>
+              <div className="card">
+                {choices
+                  .slice()
+                  .sort((a, b) => owedSec(b.id) - owedSec(a.id))
+                  .map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      className="row"
+                      onClick={() => {
+                        apply(p.id)
+                        setNamePick(null)
+                      }}
+                    >
+                      <span className="grow">
+                        <span className="name">{fullName(p)}</span>
+                        <span className="meta">
+                          {minutes(s.playedSec.get(p.id) ?? 0)} played
+                          {onFieldIds.has(p.id) ? ' · on the field' : ' · on the bench'}
+                        </span>
+                      </span>
+                      <span className="chev" aria-hidden="true">
+                        &rsaquo;
+                      </span>
+                    </button>
+                  ))}
+                {choices.length === 0 ? (
+                  <div className="pad dim">Nobody else to choose from.</div>
+                ) : null}
+              </div>
+            </Sheet>
+          )
+        })()
+      ) : null}
+
+      {editShiftIdx !== null && plan ? (
+        <Sheet title="Change the lineup" onClose={() => setEditShiftIdx(null)}>
+          <LineupEditor
+            formation={formation}
+            assignments={plan.shifts[editShiftIdx]?.assignments ?? {}}
+            squad={available}
+            label="Who is on"
+            hint="Tap any position. Nothing happens until you confirm the substitution."
+            minutesOf={(id) => minutes(s.playedSec.get(id) ?? 0)}
+            onPick={(slotId, playerId) =>
+              void setLineupAt(editShiftIdx, slotId, playerId)
+            }
+            footer={
+              <button
+                type="button"
+                className="cta-big"
+                onClick={() => setEditShiftIdx(null)}
+              >
+                DONE
+              </button>
+            }
+          />
+        </Sheet>
+      ) : null}
+
       {slotSheet ? (
         (() => {
           const label =
             formation.slots.find((x) => x.id === slotSheet.slotId)?.label ?? 'Position'
-          const pre = s.status === 'pre'
-          const choices = pre ? lineupBench : bench
-          const title = pre
-            ? `Who starts at ${label}?`
-            : slotSheet.playerId
-              ? `Sub off ${show(slotSheet.playerId)}`
-              : `Who goes in at ${label}?`
+          const title = slotSheet.playerId
+            ? `Sub off ${show(slotSheet.playerId)}`
+            : `Who goes in at ${label}?`
           return (
             <Sheet title={title} onClose={() => setSlotSheet(null)}>
               <div className="dim" style={{ marginBottom: '0.6rem' }}>
-                {pre ? 'Anyone on the bench.' : 'Most owed first.'}
+                Most owed first.
               </div>
               <div className="card">
-                {choices.map((p) => (
+                {bench.map((p) => (
                   <button
                     key={p.id}
                     type="button"
                     className="row"
                     onClick={() => {
-                      if (pre) void setStarter(slotSheet.slotId, p.id)
-                      else if (slotSheet.playerId)
+                      if (slotSheet.playerId)
                         void unplannedSwap(slotSheet.playerId, slotSheet.slotId, p.id)
                       else void bringOn(slotSheet.slotId, p.id)
                     }}
                   >
                     <span className="grow">
                       <span className="name">{fullName(p)}</span>
-                      {pre ? null : (
-                        <span className="meta">
-                          {minutes(s.playedSec.get(p.id) ?? 0)} played · owed{' '}
-                          {mmss(Math.max(0, owedSec(p.id)))}
-                        </span>
-                      )}
+                      <span className="meta">
+                        {minutes(s.playedSec.get(p.id) ?? 0)} played · owed{' '}
+                        {mmss(Math.max(0, owedSec(p.id)))}
+                      </span>
                     </span>
                     <span className="chev" aria-hidden="true">
-                      ›
+                      &rsaquo;
                     </span>
                   </button>
                 ))}
-                {choices.length === 0 ? (
+                {bench.length === 0 ? (
                   <div className="pad dim">Nobody is on the bench.</div>
                 ) : null}
               </div>
@@ -1075,5 +1221,31 @@ function FinalSummary({
         })}
       </div>
     </>
+  )
+}
+
+/** A one-line reminder of what tapping Start will actually change. */
+function BreakChanges({
+  diff,
+  show,
+}: {
+  diff: SubPlan
+  show: (id: string) => string
+}) {
+  const on = [...diff.swaps.map((w) => w.on), ...diff.onOnly.map((o) => o.playerId)]
+  const off = [...diff.swaps.map((w) => w.off), ...diff.offOnly.map((o) => o.playerId)]
+  if (!diff.keeper && on.length === 0 && off.length === 0) {
+    return (
+      <div className="dim" style={{ textAlign: 'center', marginTop: '0.7rem' }}>
+        Same eleven as the end of the last period.
+      </div>
+    )
+  }
+  return (
+    <div className="dim" style={{ textAlign: 'center', marginTop: '0.7rem' }}>
+      {diff.keeper ? <>Goal: {show(diff.keeper.on)}. </> : null}
+      {on.length > 0 ? <>On: {on.map(show).join(', ')}. </> : null}
+      {off.length > 0 ? <>Off: {off.map(show).join(', ')}.</> : null}
+    </div>
   )
 }

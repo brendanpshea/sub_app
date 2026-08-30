@@ -1224,6 +1224,20 @@ table.plan .qsep {
   font-variant-numeric: tabular-nums;
 }
 
+button.side {
+  width: 100%;
+  cursor: pointer;
+  position: relative;
+}
+
+button.side::after {
+  content: none;
+}
+
+button.side:active {
+  filter: brightness(0.94);
+}
+
 .swap.keeper {
   padding-bottom: 0.45rem;
   margin-bottom: 0.55rem;
