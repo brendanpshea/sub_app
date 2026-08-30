@@ -19,6 +19,10 @@ export default function TeamDetail() {
     () => db.formations.where('teamId').equals(teamId).toArray(),
     [teamId],
   )
+  const games = useLiveQuery(
+    () => db.games.where('teamId').equals(teamId).toArray(),
+    [teamId],
+  )
 
   if (team === undefined) return <AppBar title="Team" back="/" />
   if (team === null || !team) {
@@ -37,6 +41,11 @@ export default function TeamDetail() {
 
   const formation =
     findFormation(custom, team.defaultFormationId) ?? BUILT_IN_FORMATIONS[0]!
+  const now = Date.now()
+  const nextGame = (games ?? [])
+    .filter((g) => g.status !== 'final' && g.kickoffAt >= now - 3 * 60 * 60 * 1000)
+    .sort((a, b) => a.kickoffAt - b.kickoffAt)[0]
+
   const active = (players ?? []).filter((p) => p.active)
   const keepers = active.filter((p) => p.gk !== 'never')
   const minutesEach =
@@ -105,11 +114,24 @@ export default function TeamDetail() {
         </div>
 
         <div className="section-label">Games</div>
-        <div className="card pad">
-          <div className="dim">
-            Games, plans and the live screen come next. Build the roster first — the
-            planner needs it.
-          </div>
+        <div className="card">
+          <Link className="row" to={`/team/${teamId}/games`}>
+            <span className="grow">
+              <span className="name">Games</span>
+              <span className="meta">
+                {games === undefined
+                  ? ' '
+                  : games.length === 0
+                    ? 'No fixtures yet'
+                    : nextGame
+                      ? `Next: ${nextGame.homeAway === 'home' ? 'v' : 'at'} ${nextGame.opponent}`
+                      : `${games.length} played`}
+              </span>
+            </span>
+            <span className="chev" aria-hidden="true">
+              ›
+            </span>
+          </Link>
         </div>
 
         <div className="btn-row" style={{ marginTop: '1.6rem' }}>

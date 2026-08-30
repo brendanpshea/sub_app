@@ -590,3 +590,199 @@ textarea {
   background: var(--rule-2);
   margin: 0 auto 0.7rem;
 }
+
+/* ---------------------------------------------------------------- attendance */
+
+.att {
+  padding: 0.6rem 0.75rem 0.7rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.att:last-child {
+  border-bottom: 0;
+}
+
+.att-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.att-head .name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.att-head .target {
+  flex: 0 0 auto;
+  font-size: 0.85rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+
+.att.out .att-head .name {
+  color: var(--ink-3);
+  text-decoration: line-through;
+}
+
+.seg {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+
+.seg button {
+  min-height: 42px;
+  padding: 0 0.2rem;
+  border: 1px solid var(--rule-2);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 0.82rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.seg button[aria-pressed='true'] {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--on-brand);
+}
+
+.seg button[data-tone='warn'][aria-pressed='true'] {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: #fff;
+}
+
+.seg button[data-tone='out'][aria-pressed='true'] {
+  background: var(--surface-3);
+  border-color: var(--rule-2);
+  color: var(--ink-3);
+}
+
+.marks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+}
+
+.marks .lead {
+  font-size: 0.76rem;
+  color: var(--ink-3);
+  font-weight: 600;
+}
+
+.marks button {
+  min-height: 36px;
+  min-width: 42px;
+  padding: 0 0.6rem;
+  border: 1px solid var(--rule-2);
+  border-radius: 18px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 0.82rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.marks button[aria-pressed='true'] {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: #fff;
+}
+
+.summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.7rem 0.9rem;
+  background: var(--brand-soft);
+  border-radius: var(--r);
+  margin-bottom: 0.7rem;
+}
+
+.summary .big {
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--brand-ink);
+  line-height: 1;
+}
+
+.summary .cap {
+  font-size: 0.82rem;
+  color: var(--ink-2);
+}
+
+.summary.warn {
+  background: var(--accent-soft);
+}
+
+.summary.warn .big {
+  color: var(--accent);
+}
+
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.stepper button {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  border: 1px solid var(--rule-2);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 1.2rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.stepper button:disabled {
+  opacity: 0.35;
+}
+
+.stepper .val {
+  flex: 1;
+  text-align: center;
+  font-size: 1.05rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.pill {
+  display: inline-block;
+  padding: 0.12rem 0.5rem;
+  border-radius: 20px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pill.planned {
+  background: var(--surface-2);
+  color: var(--ink-3);
+}
+
+.pill.live {
+  background: var(--accent);
+  color: #fff;
+}
+
+.pill.final {
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+}

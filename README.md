@@ -67,10 +67,12 @@ src/
     types.ts        the model
     formations.ts   7v7 preset library + pitch coordinates
     fairness.ts     fair share, shift grid, formatting
+    attendance.ts   status/window invariants, roster reconciliation
   db/         Dexie schema, CRUD, JSON export/import
   ui/
     components/     AppBar, Pitch, Sheet
-    screens/        Teams, TeamDetail, Roster, FormationPicker, Backup
+    screens/        Teams, TeamDetail, Roster, FormationPicker,
+                    Games, GameSetup, Backup
 ```
 
 Keep `domain/` free of React. The planner and the derivations are pure functions
@@ -79,6 +81,7 @@ playing time.
 
 ## Status
 
-Built: data layer, roster with constraints, formation presets, backup/restore.
+Built: data layer, roster with constraints, formation presets, games and
+attendance with live fair-share preview, backup and restore.
 
-Next: games and attendance, then the planner and the plan grid, then live mode.
+Next: the planner and the plan grid, then live mode.
