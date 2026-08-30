@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, rosterOf } from '@/db/db'
-import { updateGame } from '@/db/games'
+import { setAttendance, updateGame } from '@/db/games'
 import { appendMany, eventsOf, undoLastGroup } from '@/db/events'
 import { loadPlan, savePlan } from '@/db/plans'
 import { reconcileAttendance } from '@/domain/attendance'
@@ -59,6 +59,7 @@ export default function Live() {
     playerId?: string
   } | null>(null)
   const [snoozeUntilSec, setSnoozeUntilSec] = useState(0)
+  const [whoIsHere, setWhoIsHere] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
 
   const formation: Formation =
@@ -343,6 +344,75 @@ export default function Live() {
     const nextField = { ...s!.onField, [offSlot]: onId }
     await replanRemainder(Math.max(0, shiftIdx), nextField)
     setToast('Plan adjusted')
+    window.setTimeout(() => setToast(null), 2200)
+  }
+
+  /**
+   * Attendance can change after kick-off — someone turns up at half-time, or
+   * has to leave. The window is set to now, so a late arrival is targeted at an
+   * even share of what remains rather than the whole game.
+   *
+   * The game is re-read from storage rather than trusted from this render, so
+   * the re-plan runs against the attendance that was actually written.
+   */
+  async function changeAttendance(playerId: string, arriving: boolean) {
+    const at = Math.max(
+      0,
+      (Math.max(1, s!.period) - 1) * periodSec +
+        Math.min(s!.periodElapsedSec, periodSec),
+    )
+    await setAttendance(
+      gameId,
+      playerId,
+      arriving
+        ? { status: 'late', availableFromSec: at, availableUntilSec: undefined }
+        : { status: 'leaveEarly', availableUntilSec: at, availableFromSec: undefined },
+    )
+
+    let field = s!.onField
+    if (!arriving) {
+      const slotId = Object.entries(field).find(([, pid]) => pid === playerId)?.[0]
+      if (slotId) {
+        await appendMany(
+          gameId,
+          [{ type: 'OFF', playerId, slotId }],
+          s!.cumulativeSec,
+        )
+        field = Object.fromEntries(
+          Object.entries(field).filter(([sid]) => sid !== slotId),
+        )
+      }
+    }
+
+    const fresh = await db.games.get(gameId)
+    if (fresh && plan && roster) {
+      const att = reconcileAttendance(fresh.attendance, roster)
+      const stillIn = new Set(
+        att.filter((a) => a.status !== 'absent').map((a) => a.playerId),
+      )
+      const result = replanFrom(
+        {
+          rules: fresh.rules,
+          formation,
+          roster: roster.filter((p) => stillIn.has(p.id)),
+          attendance: att,
+          pairings: pairings ?? [],
+          pins: plan.pins,
+          seed: plan.seed,
+        },
+        Math.max(0, shiftIdx),
+        s!.playedSec,
+        field,
+        plan.shifts,
+      )
+      await savePlan(
+        gameId,
+        result.shifts,
+        result.seed,
+        plan.pins.filter((p) => p.shiftIndex > shiftIdx),
+      )
+    }
+    setToast(arriving ? 'Added to the game' : 'Plan adjusted')
     window.setTimeout(() => setToast(null), 2200)
   }
 
@@ -701,6 +771,77 @@ export default function Live() {
         </Sheet>
       ) : null}
 
+      {whoIsHere ? (
+        (() => {
+          const inGame = new Set(available.map((p) => p.id))
+          const notHere = roster.filter((p) => p.active && !inGame.has(p.id))
+          return (
+            <Sheet title="Who is here" onClose={() => setWhoIsHere(false)}>
+              {notHere.length > 0 ? (
+                <>
+                  <div className="section-label" style={{ marginTop: 0 }}>
+                    Just arrived
+                  </div>
+                  <div className="card">
+                    {notHere.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className="row"
+                        onClick={() => {
+                          setWhoIsHere(false)
+                          void changeAttendance(p.id, true)
+                        }}
+                      >
+                        <span className="grow">
+                          <span className="name">{fullName(p)}</span>
+                          <span className="meta">
+                            Add now — even share of what is left
+                          </span>
+                        </span>
+                        <span className="chev" aria-hidden="true">
+                          +
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : null}
+
+              <div className="section-label">Playing</div>
+              <div className="card">
+                {available.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className="row"
+                    onClick={() => {
+                      if (!confirm(`${fullName(p)} has left for the day?`)) return
+                      setWhoIsHere(false)
+                      void changeAttendance(p.id, false)
+                    }}
+                  >
+                    <span className="grow">
+                      <span className="name">{fullName(p)}</span>
+                      <span className="meta">
+                        {minutes(s.playedSec.get(p.id) ?? 0)} played · tap if they
+                        have gone
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {notHere.length === 0 ? (
+                <div className="dim" style={{ marginTop: '0.7rem' }}>
+                  Everyone on the roster is already in the game.
+                </div>
+              ) : null}
+            </Sheet>
+          )
+        })()
+      ) : null}
+
       {menu ? (
         <Sheet title="Game" onClose={() => setMenu(false)}>
           <div className="card">
@@ -716,6 +857,24 @@ export default function Live() {
               <span className="grow">
                 <span className="name">Goal for us</span>
                 <span className="meta">{s.goalCount} so far</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="row"
+              onClick={() => {
+                setMenu(false)
+                setWhoIsHere(true)
+              }}
+            >
+              <span className="grow">
+                <span className="name">Who is here</span>
+                <span className="meta">
+                  Someone arrived late, or had to leave
+                </span>
+              </span>
+              <span className="chev" aria-hidden="true">
+                ›
               </span>
             </button>
             <button

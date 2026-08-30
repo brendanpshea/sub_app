@@ -234,6 +234,26 @@ function PlayerEditor({
         />
       </label>
 
+      {p.firstName.trim().includes(' ') && !p.lastName ? (
+        <div className="dim" style={{ marginTop: '-0.4rem', marginBottom: '0.8rem' }}>
+          Player chips show the first name only, so this whole name will appear on
+          the pitch.{' '}
+          <button
+            type="button"
+            className="linky"
+            onClick={() => {
+              const parts = p.firstName.trim().split(/\s+/)
+              patch({
+                firstName: parts[0] ?? p.firstName,
+                lastName: parts.slice(1).join(' '),
+              })
+            }}
+          >
+            Split it?
+          </button>
+        </div>
+      ) : null}
+
       {sharesFirstName ? (
         <div className="dim" style={{ marginTop: '-0.4rem', marginBottom: '0.8rem' }}>
           {p.lastName
