@@ -422,3 +422,63 @@ describe('keeper rotation frequency', () => {
     expect(keepers.size).toBe(1)
   })
 })
+
+describe('substitution rhythm', () => {
+  // Two dedicated keepers so the goal is out of the way: a keeper legitimately
+  // sits more, because twenty minutes in goal is already most of a fair share.
+  function outfieldSquad(): Player[] {
+    return [
+      ...squad(8, { gk: 'never' }),
+      player('k1', { gk: 'preferred' }),
+      player('k2', { gk: 'preferred' }),
+    ]
+  }
+
+  const FIVE: GameRules = { ...RULES, shiftMinutes: 5 }
+
+  function benchAt(plan: PlannedShift[], roster: Player[], i: number): Set<string> {
+    const on = new Set(onField(plan[i]!))
+    return new Set(roster.filter((p) => !on.has(p.id)).map((p) => p.id))
+  }
+
+  it('brings the whole bench on at the first change', () => {
+    // Three substitutes and a five-minute interval means all three go on
+    // together. Dribbling two on and making the third wait is the thing that
+    // gets a coach asked "why can't I go in yet?".
+    const roster = outfieldSquad()
+    const plan = generatePlan(input(roster, { rules: FIVE }))
+    const first = benchAt(plan.shifts, roster, 0)
+    const second = benchAt(plan.shifts, roster, 1)
+    expect(first.size).toBe(3)
+    for (const id of first) {
+      expect(second.has(id), `${id} was left on the bench a second shift`).toBe(false)
+    }
+  })
+
+  it('never leaves an outfielder on the bench two shifts running', () => {
+    const roster = outfieldSquad()
+    const plan = generatePlan(input(roster, { rules: FIVE }))
+    const keepers = new Set(plan.shifts.map((sh) => sh.assignments['gk']))
+    for (let i = 1; i < plan.shifts.length; i++) {
+      const prev = benchAt(plan.shifts, roster, i - 1)
+      const cur = benchAt(plan.shifts, roster, i)
+      for (const id of prev) {
+        if (keepers.has(id)) continue
+        expect(cur.has(id), `${id} sat out shifts ${i - 1} and ${i}`).toBe(false)
+      }
+    }
+  })
+
+  it('does not overplay a keeper for the goal time they are owed', () => {
+    // Twenty minutes in goal is most of a fair share, so a keeper gets less
+    // outfield time. Before this was accounted for they finished seven minutes
+    // over, and repair clawed it back out of the earliest shifts.
+    const roster = outfieldSquad()
+    const plan = generatePlan(input(roster, { rules: FIVE }))
+    for (const p of roster) {
+      const dev = (plan.assigned.get(p.id) ?? 0) - (plan.target.get(p.id) ?? 0)
+      expect(Math.abs(dev), `${p.id} is ${Math.round(dev / 60)} min off target`)
+        .toBeLessThanOrEqual(300)
+    }
+  })
+})

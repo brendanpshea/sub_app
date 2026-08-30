@@ -31,7 +31,6 @@ export interface GameRules {
   playersOnField: number //       7
   shiftMinutes: number //         3 — target sub cadence, not a hard rule
   subMode: 'stoppage' | 'window'
-  maxPlayersPerSub: number //     2 — soft cap; deficit absorbs the remainder
   /**
    * Shortest stint in goal, in minutes, rounded up to whole periods. A keeper
    * change is awkward to make at a throw-in and wants a natural break, so this
@@ -50,7 +49,6 @@ export const DEFAULT_RULES: GameRules = {
   playersOnField: 7,
   shiftMinutes: 3,
   subMode: 'stoppage',
-  maxPlayersPerSub: 2,
   gkMinMinutes: 20,
   maxGkPeriodsPerPlayer: 2,
   maxConsecutiveShifts: 4,

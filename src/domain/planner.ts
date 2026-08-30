@@ -30,11 +30,14 @@ import { mulberry32 } from './ids'
  * and coaches accept the charts it produces. The scoring weights below are the
  * whole of the "intelligence" and are meant to be tuned against real rosters.
  *
- * Three passes:
+ * Four passes:
  *   1. Keepers, at period granularity — the tightest constraint, and children
  *      need a whole quarter to settle into the position.
  *   2. Field slots, deficit-greedy, tightest slots first.
  *   3. Repair — a bounded local search that closes the remaining spread.
+ *   4. Smoothing — breaks up runs of consecutive shifts on the bench without
+ *      letting anyone's total drift, because level minutes still read as unfair
+ *      when the waiting arrives in one lump.
  */
 
 export const WEIGHTS = {
@@ -43,14 +46,20 @@ export const WEIGHTS = {
   /** Staying put. This is what produces rolling subs with no special mechanism. */
   continuity: 0.35,
   preferred: 0.3,
-  rested: 0.25,
+  /**
+   * Per shift already spent waiting. Deliberately larger than `continuity`:
+   * when two players are owed the same time, the one sitting on the bench goes
+   * on. Multiplied by the length of the wait, so a second consecutive shift on
+   * the bench is close to unbeatable — nobody should have to ask why they
+   * cannot go in yet.
+   */
+  rested: 0.9,
   keepTogether: 0.2,
   variety: 0.15,
   overConsecutive: -0.5,
 } as const
 
 const REPAIR_ITERATIONS = 200
-const REPAIR_TOLERANCE_SEC = 20
 
 export interface PlannerInput {
   rules: GameRules
@@ -60,7 +69,11 @@ export interface PlannerInput {
   pairings?: Pairing[]
   pins?: Pin[]
   seed?: number
-  /** Seconds already played this game. Set when re-planning mid-game. */
+  /**
+   * Outfield seconds already played this game, excluding time in goal.
+   * Set when re-planning mid-game. Goal time is accounted for separately,
+   * because it is committed a whole block at a time.
+   */
   startingCredit?: Map<ID, number>
   /** Season debt in seconds, positive means owed. Scaled by rules.seasonCarryWeight. */
   carriedDeficit?: Map<ID, number>
@@ -108,7 +121,9 @@ export function generatePlan(input: PlannerInput): PlanResult {
   // Running state
   const credit = new Map<ID, number>(input.startingCredit ?? [])
   const target = new Map<ID, number>()
+  const outTarget = new Map<ID, number>()
   const consecutive = new Map<ID, number>()
+  const benchStreak = new Map<ID, number>()
   const gkPeriodsThisGame = new Map<ID, number>()
   const groupSec = new Map<ID, Record<PositionGroup, number>>()
 
@@ -157,12 +172,39 @@ export function generatePlan(input: PlannerInput): PlanResult {
 
   // ---- pass 2: field slots --------------------------------------------
 
+  /**
+   * Seconds each player is already committed to spending in goal.
+   *
+   * Keepers are chosen a whole block at a time, so by the time outfield slots
+   * are filled it is already known that one child will spend twenty minutes in
+   * goal later. Without that knowledge the greedy pass hands them a normal
+   * share of early outfield time and they finish the game well over their fair
+   * share — and repair then has to claw those minutes back out of the earliest
+   * shifts, which is exactly what wrecks the substitution rotation a coach
+   * sees first. Spreading the commitment across the game keeps the outfield
+   * rotation clean and the totals honest.
+   */
+  const gkCommitted = new Map<ID, number>()
+  if (gkSlotDef) {
+    for (let i = 0; i < grid.length; i++) {
+      const who = shifts[i]?.assignments[gkSlotDef.id]
+      if (!who) continue
+      const sl = grid[i]!
+      gkCommitted.set(who, (gkCommitted.get(who) ?? 0) + (sl.endSec - sl.startSec))
+    }
+  }
+  const gkShare = (id: ID): number =>
+    grid.length > 0 ? (gkCommitted.get(id) ?? 0) / grid.length : 0
+
   for (let i = 0; i < grid.length; i++) {
     const slice = grid[i]!
     const shift = shifts[i]!
     const duration = slice.endSec - slice.startSec
     const inc = increments[i] ?? new Map<ID, number>()
-    for (const [id, sec] of inc) target.set(id, (target.get(id) ?? 0) + sec)
+    for (const [id, sec] of inc) {
+      target.set(id, (target.get(id) ?? 0) + sec)
+      outTarget.set(id, (outTarget.get(id) ?? 0) + sec - gkShare(id))
+    }
 
     if (i < from) {
       // Replayed shift: not re-decided. Its minutes are only added when no
@@ -175,6 +217,7 @@ export function generatePlan(input: PlannerInput): PlanResult {
         duration,
         credit,
         consecutive,
+        benchStreak,
         groupSec,
         roster,
         input.startingCredit === undefined,
@@ -227,9 +270,10 @@ export function generatePlan(input: PlannerInput): PlanResult {
           player: p,
           slot,
           credit,
-          target,
+          target: outTarget,
           carry,
           consecutive,
+          benchStreak,
           previous,
           groupSec,
           seasonByGroup: input.seasonByGroup,
@@ -252,6 +296,7 @@ export function generatePlan(input: PlannerInput): PlanResult {
       duration,
       credit,
       consecutive,
+      benchStreak,
       groupSec,
       roster,
       true,
@@ -260,7 +305,7 @@ export function generatePlan(input: PlannerInput): PlanResult {
 
   // ---- pass 3: repair --------------------------------------------------
 
-  repair({
+  const balanceArgs: RepairArgs = {
     shifts,
     grid,
     formation,
@@ -270,9 +315,11 @@ export function generatePlan(input: PlannerInput): PlanResult {
     pairings,
     from,
     byId,
-    target,
+    target: outTarget,
     ...(input.startingCredit ? { startingCredit: input.startingCredit } : {}),
-  })
+  }
+  repair(balanceArgs)
+  smoothBenchRuns(balanceArgs)
 
   const assigned = totalAssigned(shifts, grid, formation)
   return {
@@ -452,6 +499,7 @@ interface ScoreArgs {
   target: Map<ID, number>
   carry: Map<ID, number>
   consecutive: Map<ID, number>
+  benchStreak: Map<ID, number>
   previous: PlannedShift | undefined
   groupSec: Map<ID, Record<PositionGroup, number>>
   seasonByGroup?: Map<ID, Record<PositionGroup, number>>
@@ -474,9 +522,9 @@ function score(a: ScoreArgs): number {
   // Avoided groups are filtered out before scoring — see the tier note above.
   if (a.player.preferredGroups.includes(a.slot.group)) s += WEIGHTS.preferred
 
-  const playedLast =
-    a.previous !== undefined && Object.values(a.previous.assignments).includes(id)
-  if (!playedLast) s += WEIGHTS.rested
+  // Scaled by how many shifts they have already waited, so a long wait wins.
+  const waited = a.benchStreak.get(id) ?? 0
+  if (waited > 0) s += WEIGHTS.rested * waited
 
   const limit = a.player.maxConsecutiveShifts ?? a.rules.maxConsecutiveShifts
   if ((a.consecutive.get(id) ?? 0) >= limit) s += WEIGHTS.overConsecutive
@@ -543,11 +591,26 @@ function repair(a: RepairArgs): void {
     return universallyAvoided.has(slot.group)
   }
 
-  /** Hand one shift from `over` to `under`, if any shift legally allows it. */
-  const trySwap = (over: Player, under: Player): boolean => {
-    for (let i = a.from; i < a.shifts.length; i++) {
+  /**
+   * Hand one shift from `over` to `under`, if any shift legally allows it and
+   * doing so actually helps.
+   *
+   * Moving a block of length `d` only reduces the imbalance when the gap
+   * between the two players is wider than the block itself; otherwise the two
+   * simply trade places in the table and the next pass swaps them back. Without
+   * that test repair churns for its whole iteration budget, shredding the tidy
+   * rotation the greedy pass produced and stranding a substitute on the bench
+   * for two shifts running.
+   */
+  const trySwap = (over: Player, under: Player, gap: number): boolean => {
+    // Latest shift first. The greedy pass leaves a tidy rotation, and the shifts
+    // a coach cares about are the ones about to happen — several may already
+    // have been announced to the children. Balancing the far end of the game
+    // costs nobody anything; unpicking the next two substitutions does.
+    for (let i = a.shifts.length - 1; i >= a.from; i--) {
       const shift = a.shifts[i]!
       const slice = a.grid[i]!
+      if (gap <= slice.endSec - slice.startSec) continue
       const eligible = eligibleDuring(a.windows, slice)
       if (!eligible.has(under.id)) continue
 
@@ -578,12 +641,16 @@ function repair(a: RepairArgs): void {
     // Mirror the scoring pass: when real minutes were supplied for the shifts
     // already played, use those rather than the minutes those shifts were
     // planned to produce, or the first half gets counted twice over.
+    // Repair can only move outfield slots, so it must judge itself on the
+    // outfield ledger. Measuring against totals would have it chasing an
+    // imbalance created by goal time it is not allowed to touch.
     const assigned = totalAssigned(
       a.shifts,
       a.grid,
       a.formation,
       a.startingCredit ? a.from : 0,
       a.startingCredit,
+      true,
     )
     const devs = a.roster
       .map((p) => ({ p, dev: (assigned.get(p.id) ?? 0) - (a.target.get(p.id) ?? 0) }))
@@ -593,20 +660,126 @@ function repair(a: RepairArgs): void {
     // rather than giving up on the first pair that cannot be swapped. A keeper
     // is often the most over-played player and cannot be moved out of goal, and
     // stopping there used to abandon imbalances elsewhere that were fixable.
+    const shortest = Math.min(
+      ...a.grid.slice(a.from).map((sl) => sl.endSec - sl.startSec),
+    )
+
     let swapped = false
     for (const over of devs) {
       if (swapped) break
       for (let j = devs.length - 1; j >= 0; j--) {
         const under = devs[j]!
         if (under.p.id === over.p.id) break
-        if (over.dev - under.dev <= REPAIR_TOLERANCE_SEC) break
-        if (trySwap(over.p, under.p)) {
+        const gap = over.dev - under.dev
+        if (gap <= shortest) break
+        if (trySwap(over.p, under.p, gap)) {
           swapped = true
           break
         }
       }
     }
     if (!swapped) return
+  }
+}
+
+/**
+ * Break up runs of consecutive shifts on the bench.
+ *
+ * Balancing minutes says nothing about how the waiting is distributed, so a
+ * player can finish level on time yet sit out the last two shifts in a row —
+ * which is precisely what gets a coach asked "why can't I go in yet?", and
+ * worst of all at the end of a game when there is no later shift to make up
+ * for it.
+ *
+ * Every swap here keeps both players inside the spread the plan has already
+ * achieved, so the rotation gets tidier without anyone's total getting worse.
+ */
+function smoothBenchRuns(a: RepairArgs): void {
+  const gkSlotId = a.formation.slots.find((sl) => sl.requiredRole === 'GK')?.id
+  const slotById = new Map(a.formation.slots.map((sl) => [sl.id, sl]))
+
+  const universallyAvoided = new Set<PositionGroup>()
+  for (const slot of a.formation.slots) {
+    if (a.roster.every((p) => p.avoidGroups.includes(slot.group))) {
+      universallyAvoided.add(slot.group)
+    }
+  }
+  const mayPlay = (p: Player, slotId: SlotId): boolean => {
+    const slot = slotById.get(slotId)
+    if (!slot) return false
+    if (!p.avoidGroups.includes(slot.group)) return true
+    return universallyAvoided.has(slot.group)
+  }
+
+  const onAt = (i: number): Set<ID> =>
+    new Set(Object.values(a.shifts[i]?.assignments ?? {}))
+
+  for (let pass = 0; pass < 40; pass++) {
+    const assigned = totalAssigned(
+      a.shifts,
+      a.grid,
+      a.formation,
+      a.startingCredit ? a.from : 0,
+      a.startingCredit,
+      true,
+    )
+    const devOf = (id: ID): number =>
+      (assigned.get(id) ?? 0) - (a.target.get(id) ?? 0)
+    let worst = 0
+    for (const p of a.roster) worst = Math.max(worst, Math.abs(devOf(p.id)))
+
+    // One swap per pass. Deviations are recomputed from scratch each time, so
+    // acting on more than one before refreshing them would let a second swap
+    // reason from numbers the first has already invalidated.
+    let changed = false
+    scan: for (let i = Math.max(a.from, 1); i < a.shifts.length; i++) {
+      const slice = a.grid[i]
+      const shift = a.shifts[i]
+      if (!slice || !shift) continue
+      const d = slice.endSec - slice.startSec
+      // Never wider than the spread the plan already achieved. Allowing even a
+      // shift's slack here lets each pass licence the next, and the imbalance
+      // ratchets away from the floor the balancing pass worked to reach.
+      const bound = worst
+
+      const prevOn = onAt(i - 1)
+      const nowOn = onAt(i)
+      const nextOn = i + 1 < a.shifts.length ? onAt(i + 1) : null
+      const eligible = eligibleDuring(a.windows, slice)
+
+      const stranded = a.roster.filter(
+        (p) => !prevOn.has(p.id) && !nowOn.has(p.id) && eligible.has(p.id),
+      )
+
+      for (const x of stranded) {
+        if (Math.abs(devOf(x.id) + d) > bound) continue
+
+        const entry = Object.entries(shift.assignments).find(([slotId, pid]) => {
+          if (slotId === gkSlotId) return false
+          if (!prevOn.has(pid)) return false // would only move the wait around
+          if (nextOn && !nextOn.has(pid)) return false // would strand them instead
+          if (a.pins.some((pin) => pin.shiftIndex === i && pin.slotId === slotId)) {
+            return false
+          }
+          if (!mayPlay(x, slotId)) return false
+          const y = a.byId.get(pid)
+          if (!y || Math.abs(devOf(pid) - d) > bound) return false
+          const others = new Set(
+            Object.entries(shift.assignments)
+              .filter(([sid]) => sid !== slotId)
+              .map(([, other]) => other),
+          )
+          return !breaksKeepApart(x.id, others, a.pairings)
+        })
+        if (!entry) continue
+
+        shift.assignments[entry[0]] = x.id
+        changed = true
+        break scan
+      }
+    }
+
+    if (!changed) return
   }
 }
 
@@ -618,6 +791,7 @@ function applyShiftAccounting(
   duration: number,
   credit: Map<ID, number>,
   consecutive: Map<ID, number>,
+  benchStreak: Map<ID, number>,
   groupSec: Map<ID, Record<PositionGroup, number>>,
   roster: Player[],
   countCredit: boolean,
@@ -632,7 +806,9 @@ function applyShiftAccounting(
     if (rec) rec[slot.group] += duration
   }
   for (const p of roster) {
-    consecutive.set(p.id, onField.has(p.id) ? (consecutive.get(p.id) ?? 0) + 1 : 0)
+    const on = onField.has(p.id)
+    consecutive.set(p.id, on ? (consecutive.get(p.id) ?? 0) + 1 : 0)
+    benchStreak.set(p.id, on ? 0 : (benchStreak.get(p.id) ?? 0) + 1)
   }
 }
 
@@ -642,6 +818,7 @@ function totalAssigned(
   formation: Formation,
   from = 0,
   base?: Map<ID, number>,
+  outfieldOnly = false,
 ): Map<ID, number> {
   const out = new Map<ID, number>(base ?? [])
   for (let i = from; i < shifts.length; i++) {
@@ -650,6 +827,7 @@ function totalAssigned(
     if (!slice) continue
     const duration = slice.endSec - slice.startSec
     for (const slot of formation.slots) {
+      if (outfieldOnly && slot.requiredRole === 'GK') continue
       const pid = shift.assignments[slot.id]
       if (!pid) continue
       out.set(pid, (out.get(pid) ?? 0) + duration)
