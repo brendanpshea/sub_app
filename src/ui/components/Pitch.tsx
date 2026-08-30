@@ -5,9 +5,9 @@ export interface SlotFill {
   name: string
   /** Optional small line under the name. */
   note?: string
-  /** 0..1 of the full-game fair share played so far. Drives the hairline. */
-  share?: number
-  /** Whether that share is on track right now. */
+  /** Minutes played so far, already formatted. The one number a sub decision needs. */
+  mins?: string
+  /** Whether those minutes are on track, so the figure can carry its own verdict. */
   tone?: 'ok' | 'behind' | 'short'
 }
 
@@ -46,13 +46,8 @@ export default function Pitch({ formation, fill, onSlotClick, alwaysLabel }: Pro
                 {alwaysLabel ? <span className="lab">{s.label}</span> : null}
                 <span className="nm">{f.name}</span>
                 {f.note ? <span className="lab">{f.note}</span> : null}
-                {f.share !== undefined ? (
-                  <span className="bar">
-                    <i
-                      className={f.tone ?? 'ok'}
-                      style={{ width: `${Math.min(100, Math.max(0, f.share * 100))}%` }}
-                    />
-                  </span>
+                {f.mins ? (
+                  <span className={`mins ${f.tone ?? 'ok'}`}>{f.mins}</span>
                 ) : null}
               </>
             ) : (

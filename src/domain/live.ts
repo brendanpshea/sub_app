@@ -4,6 +4,7 @@ import type {
   GameRules,
   ID,
   PositionGroup,
+  Slot,
   SlotId,
 } from './types'
 import { emptyGroupRecord } from './types'
@@ -280,7 +281,7 @@ export interface Swap {
 
 export interface SubPlan {
   swaps: Swap[]
-  /** Players staying on but changing position. Shown quietly. */
+  /** Always empty: a substitution never repositions the players staying on. */
   moves: { playerId: ID; fromSlotId: SlotId; toSlotId: SlotId }[]
   offOnly: { playerId: ID; slotId: SlotId }[]
   onOnly: { playerId: ID; slotId: SlotId }[]
@@ -289,10 +290,20 @@ export interface SubPlan {
 /**
  * Turn "who is on now" and "who the plan wants next" into the substitution a
  * coach actually makes: pairs of names, one off and one on.
+ *
+ * A substitution moves exactly the players being substituted. Whoever stays on
+ * keeps the position they are already standing in, even where the plan had a
+ * different idea — shuffling six children around the pitch to satisfy a chart
+ * is disruptive, hard to shout, and buys nothing. So the player coming on
+ * inherits the position of the player going off.
+ *
+ * Where there is a choice of vacated positions, the plan's intention is used as
+ * a preference, then any position the incoming player does not avoid.
  */
 export function diffToPlan(
   onField: Record<SlotId, ID>,
   target: Record<SlotId, ID>,
+  opts?: { slots?: Slot[]; avoids?: Map<ID, PositionGroup[]> },
 ): SubPlan {
   const currentIds = new Set(Object.values(onField))
   const targetIds = new Set(Object.values(target))
@@ -306,28 +317,38 @@ export function diffToPlan(
     if (!currentIds.has(playerId)) ons.push({ playerId, slotId })
   }
 
-  const moves: SubPlan['moves'] = []
-  for (const [slotId, playerId] of Object.entries(target)) {
-    if (!currentIds.has(playerId)) continue
-    const was = Object.entries(onField).find(([, pid]) => pid === playerId)?.[0]
-    if (was && was !== slotId) {
-      moves.push({ playerId, fromSlotId: was, toSlotId: slotId })
-    }
-  }
-
+  const groupOf = new Map((opts?.slots ?? []).map((sl) => [sl.id, sl.group]))
+  const free = [...offs]
   const swaps: Swap[] = []
-  const n = Math.min(offs.length, ons.length)
-  for (let i = 0; i < n; i++) {
-    const off = offs[i]!
-    const on = ons[i]!
-    swaps.push({ off: off.playerId, offSlot: off.slotId, on: on.playerId, onSlot: on.slotId })
+  let matched = 0
+
+  for (const on of ons) {
+    if (free.length === 0) break
+    const avoid = opts?.avoids?.get(on.playerId) ?? []
+    const willing = (slotId: SlotId): boolean => {
+      const g = groupOf.get(slotId)
+      return !g || !avoid.includes(g)
+    }
+    // The position the plan had in mind, if it is opening up and they will
+    // play there. A stated "not in defence" outranks the chart.
+    let i = free.findIndex((f) => f.slotId === on.slotId && willing(f.slotId))
+    if (i < 0) i = free.findIndex((f) => willing(f.slotId))
+    if (i < 0) i = 0
+    const off = free.splice(i, 1)[0]!
+    swaps.push({
+      off: off.playerId,
+      offSlot: off.slotId,
+      on: on.playerId,
+      onSlot: off.slotId,
+    })
+    matched++
   }
 
   return {
     swaps,
-    moves,
-    offOnly: offs.slice(n),
-    onOnly: ons.slice(n),
+    moves: [],
+    offOnly: free,
+    onOnly: ons.slice(matched),
   }
 }
 

@@ -305,12 +305,49 @@ describe('diffToPlan', () => {
     expect(sub.onOnly).toHaveLength(0)
   })
 
-  it('reports a position change as a move, not a substitution', () => {
+  it('leaves the players staying on exactly where they are', () => {
+    // The plan wants these two to trade positions. Nobody is coming off, so
+    // there is nothing to do — marching children across the pitch to satisfy a
+    // chart is disruptive and buys nothing.
     const now = { lb: 'a', cm: 'b' }
     const next = { lb: 'b', cm: 'a' }
     const sub = diffToPlan(now, next)
     expect(sub.swaps).toHaveLength(0)
-    expect(sub.moves).toHaveLength(2)
+    expect(sub.moves).toHaveLength(0)
+    expect(sub.offOnly).toHaveLength(0)
+    expect(sub.onOnly).toHaveLength(0)
+  })
+
+  it('puts the player coming on into the position just vacated', () => {
+    const now = { gk: 'k', lb: 'a', cm: 'b', st: 'c' }
+    // The plan wants 'x' at cm, but 'a' is the one coming off at lb.
+    const next = { gk: 'k', cm: 'x', st: 'c', lb: 'b' }
+    const sub = diffToPlan(now, next)
+    expect(sub.swaps).toHaveLength(1)
+    expect(sub.swaps[0]!.off).toBe('a')
+    expect(sub.swaps[0]!.on).toBe('x')
+    // Takes the vacated shirt, not the planned one.
+    expect(sub.swaps[0]!.onSlot).toBe('lb')
+    // And 'b' is not marched from cm to lb.
+    expect(sub.moves).toHaveLength(0)
+  })
+
+  it('prefers the planned position when it is one of the ones opening up', () => {
+    const now = { lb: 'a', st: 'c' }
+    const next = { lb: 'x', st: 'y' }
+    const sub = diffToPlan(now, next)
+    const x = sub.swaps.find((w) => w.on === 'x')
+    expect(x?.onSlot).toBe('lb')
+  })
+
+  it('avoids handing someone a position they will not play', () => {
+    const slots = FORMATION.slots
+    const now = { lb: 'a', st: 'c' } // defence and attack both opening up
+    const next = { lb: 'x', st: 'y' }
+    const avoids = new Map([['x', ['DEF' as const]]])
+    const sub = diffToPlan(now, next, { slots, avoids })
+    expect(sub.swaps.find((w) => w.on === 'x')?.onSlot).toBe('st')
+    expect(sub.swaps.find((w) => w.on === 'y')?.onSlot).toBe('lb')
   })
 
   it('says nothing when the field already matches the plan', () => {

@@ -21,6 +21,7 @@ import {
   isSubDue,
   secondsUntilShift,
   type LiveState,
+  type SubPlan,
 } from '@/domain/live'
 import { generatePlan, replanFrom } from '@/domain/planner'
 import type { Formation, GameEventBody, Pin, Player, SlotId } from '@/domain/types'
@@ -60,6 +61,7 @@ export default function Live() {
   } | null>(null)
   const [snoozeUntilSec, setSnoozeUntilSec] = useState(0)
   const [whoIsHere, setWhoIsHere] = useState(false)
+  const [manualSub, setManualSub] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
 
   const formation: Formation =
@@ -120,17 +122,30 @@ export default function Live() {
   const currentShift = shiftIdx >= 0 ? plan?.shifts[shiftIdx] : undefined
   const nextShift = shiftIdx >= 0 ? plan?.shifts[shiftIdx + 1] : undefined
 
-  const sub = diffToPlan(s.onField, currentShift?.assignments ?? {})
+  const subOpts = {
+    slots: formation.slots,
+    avoids: new Map(roster.map((p) => [p.id, p.avoidGroups])),
+  }
+  const sub = diffToPlan(s.onField, currentShift?.assignments ?? {}, subOpts)
   const due = s.status === 'running' && isSubDue(sub) && !!currentShift
   const showSubSheet = due && s.cumulativeSec >= snoozeUntilSec
+
+  // What a "make subs" tap would do: whatever is already due, otherwise the
+  // next scheduled change brought forward to this stoppage.
+  const earlySub = nextShift
+    ? diffToPlan(s.onField, nextShift.assignments, subOpts)
+    : null
+  const nextChange =
+    isSubDue(sub) && currentShift
+      ? { shift: currentShift, diff: sub, index: shiftIdx }
+      : nextShift && earlySub && isSubDue(earlySub)
+        ? { shift: nextShift, diff: earlySub, index: shiftIdx + 1 }
+        : null
+  const activeSub = showSubSheet || manualSub ? nextChange : null
 
   const untilNext = nextShift
     ? secondsUntilShift(nextShift, rules, s.periodElapsedSec)
     : periodSec - s.periodElapsedSec
-
-  const lateBy = currentShift
-    ? s.periodElapsedSec - (currentShift.startSec - (s.period - 1) * periodSec)
-    : 0
 
   // Fair share, both for the whole game and for right now.
   const fullShare = fairShareSec(rules, attendance)
@@ -288,37 +303,40 @@ export default function Live() {
     )
   }
 
-  async function confirmSub() {
+  async function confirmSub(diff: SubPlan, targetIndex: number, plannedRelSec: number) {
     const offs: GameEventBody[] = []
-    const moves: GameEventBody[] = []
     const ons: GameEventBody[] = []
 
-    for (const sw of sub.swaps) {
+    // Only the players actually changing move. Anyone staying on keeps the
+    // position they are already standing in, so a substitution is two names,
+    // not a reshuffle of the whole team.
+    for (const sw of diff.swaps) {
       offs.push({ type: 'OFF', playerId: sw.off, slotId: sw.offSlot })
       ons.push({ type: 'ON', playerId: sw.on, slotId: sw.onSlot })
     }
-    for (const o of sub.offOnly) {
+    for (const o of diff.offOnly) {
       offs.push({ type: 'OFF', playerId: o.playerId, slotId: o.slotId })
     }
-    for (const o of sub.onOnly) {
+    for (const o of diff.onOnly) {
       ons.push({ type: 'ON', playerId: o.playerId, slotId: o.slotId })
     }
-    for (const m of sub.moves) {
-      moves.push({
-        type: 'MOVE',
-        playerId: m.playerId,
-        fromSlotId: m.fromSlotId,
-        toSlotId: m.toSlotId,
-      })
-    }
 
-    // Off first so slots are free, then moves, then on.
-    await appendMany(gameId, [...offs, ...moves, ...ons], s!.cumulativeSec)
+    // Off first so the shirts are free, then on.
+    await appendMany(gameId, [...offs, ...ons], s!.cumulativeSec)
+    setManualSub(false)
+    setSnoozeUntilSec(0)
+    const drift = s!.periodElapsedSec - plannedRelSec
+    await afterSub(targetIndex, drift)
+  }
 
-    // The referee decides when play stops, so a late sub is normal. Past a
-    // minute the remainder is quietly rebalanced rather than left to drift.
-    if (Math.abs(lateBy) > 60) {
-      await replanRemainder(shiftIdx + 1, currentShift?.assignments ?? {})
+  /**
+   * The referee decides when play stops, so a sub landing early or late is
+   * normal. Past a minute either way the remainder is quietly rebalanced rather
+   * than left to drift.
+   */
+  async function afterSub(targetIndex: number, drift: number) {
+    if (Math.abs(drift) > 60) {
+      await replanRemainder(targetIndex + 1, {})
       setToast('Plan adjusted')
       window.setTimeout(() => setToast(null), 2200)
     }
@@ -440,10 +458,9 @@ export default function Live() {
   for (const [slotId, playerId] of Object.entries(s.onField)) {
     const p = byId.get(playerId)
     if (!p) continue
-    const target = fullShare.get(playerId) ?? 1
     fill[slotId] = {
       name: displayName(p, available),
-      share: target > 0 ? (s.playedSec.get(playerId) ?? 0) / target : 0,
+      mins: minutes(s.playedSec.get(playerId) ?? 0),
       tone: toneFor(playerId),
     }
   }
@@ -601,69 +618,108 @@ export default function Live() {
                 {bench.length === 0 ? <span className="dim">Everyone is on</span> : null}
               </div>
             </div>
+
+            <button
+              type="button"
+              className="cta-big subs-btn"
+              disabled={!nextChange}
+              onClick={() => setManualSub(true)}
+            >
+              {nextChange ? 'MAKE SUBS' : 'NO SUBS DUE'}
+            </button>
           </>
         )}
       </div>
 
       {/* ---------------------------------------------------------- sheets */}
 
-      {showSubSheet ? (
-        <Sheet title="Substitution" onClose={() => setSnoozeUntilSec(s.cumulativeSec + 60)}>
-          <div className="subhead">
-            <div className="when">
-              Planned {mmss(Math.max(0, (currentShift?.startSec ?? 0) - (s.period - 1) * periodSec))}
-            </div>
-            {lateBy > 5 ? <div className="late">+{mmss(lateBy)} late</div> : null}
-          </div>
+      {activeSub ? (
+        (() => {
+          const plannedRel = Math.max(
+            0,
+            activeSub.shift.startSec - (s.period - 1) * periodSec,
+          )
+          const drift = s.periodElapsedSec - plannedRel
+          const diff = activeSub.diff
+          return (
+            <Sheet
+              title="Substitution"
+              onClose={() => {
+                setManualSub(false)
+                if (showSubSheet) setSnoozeUntilSec(s.cumulativeSec + 60)
+              }}
+            >
+              <div className="subhead">
+                <div className="when">Planned {mmss(plannedRel)}</div>
+                {drift > 5 ? (
+                  <div className="late">+{mmss(drift)} late</div>
+                ) : drift < -5 ? (
+                  <div className="late">{mmss(-drift)} early</div>
+                ) : null}
+              </div>
 
-          {sub.swaps.map((sw) => (
-            <div className="swap" key={`${sw.off}-${sw.on}`}>
-              <span className="side">
-                {show(sw.off)}
-                <em>{minutes(s.playedSec.get(sw.off) ?? 0)} played</em>
-              </span>
-              <span className="arrow" aria-hidden="true">
-                →
-              </span>
-              <span className="side on">
-                {show(sw.on)}
-                <em>owed {mmss(Math.max(0, owedSec(sw.on)))}</em>
-              </span>
-            </div>
-          ))}
-          {sub.offOnly.map((o) => (
-            <div className="swap" key={o.playerId}>
-              <span className="side">{show(o.playerId)}</span>
-              <span className="arrow">→</span>
-              <span className="side">bench</span>
-            </div>
-          ))}
-          {sub.onOnly.map((o) => (
-            <div className="swap" key={o.playerId}>
-              <span className="side">bench</span>
-              <span className="arrow">→</span>
-              <span className="side on">{show(o.playerId)}</span>
-            </div>
-          ))}
-          {sub.moves.length > 0 ? (
-            <div className="dim" style={{ textAlign: 'center', marginTop: '0.4rem' }}>
-              Also moving:{' '}
-              {sub.moves.map((m) => show(m.playerId)).join(', ')}
-            </div>
-          ) : null}
+              {diff.swaps.map((sw) => (
+                <div className="swap" key={`${sw.off}-${sw.on}`}>
+                  <span className="side">
+                    {show(sw.off)}
+                    <em>{minutes(s.playedSec.get(sw.off) ?? 0)} played</em>
+                  </span>
+                  <span className="arrow" aria-hidden="true">
+                    &rarr;
+                  </span>
+                  <span className="side on">
+                    {show(sw.on)}
+                    <em>{minutes(s.playedSec.get(sw.on) ?? 0)} played</em>
+                  </span>
+                </div>
+              ))}
+              {diff.offOnly.map((o) => (
+                <div className="swap" key={o.playerId}>
+                  <span className="side">
+                    {show(o.playerId)}
+                    <em>{minutes(s.playedSec.get(o.playerId) ?? 0)} played</em>
+                  </span>
+                  <span className="arrow">&rarr;</span>
+                  <span className="side">bench</span>
+                </div>
+              ))}
+              {diff.onOnly.map((o) => (
+                <div className="swap" key={o.playerId}>
+                  <span className="side">bench</span>
+                  <span className="arrow">&rarr;</span>
+                  <span className="side on">
+                    {show(o.playerId)}
+                    <em>{minutes(s.playedSec.get(o.playerId) ?? 0)} played</em>
+                  </span>
+                </div>
+              ))}
 
-          <button type="button" className="cta-big" onClick={() => void confirmSub()}>
-            ✓ CONFIRM
-          </button>
-          <div className="subacts">
-            <button type="button" onClick={() => void skipSub()}>
-              Skip
-            </button>
-            <button type="button" onClick={() => setSnoozeUntilSec(s.cumulativeSec + 60)}>
-              Delay 1:00
-            </button>
-          </div>
-        </Sheet>
+              <button
+                type="button"
+                className="cta-big"
+                onClick={() =>
+                  void confirmSub(diff, activeSub.index, plannedRel)
+                }
+              >
+                &#10003; CONFIRM
+              </button>
+              <div className="subacts">
+                <button type="button" onClick={() => void skipSub()}>
+                  Skip
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setManualSub(false)
+                    setSnoozeUntilSec(s.cumulativeSec + 60)
+                  }}
+                >
+                  Delay 1:00
+                </button>
+              </div>
+            </Sheet>
+          )
+        })()
       ) : null}
 
       {slotSheet ? (

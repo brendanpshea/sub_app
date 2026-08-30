@@ -1061,29 +1061,25 @@ table.plan .qsep {
   max-height: 52vh;
 }
 
-/* Player chips carry a hairline showing minutes against fair share, so
-   equity reads at a glance without a single number on screen. */
-.slot .bar {
+/* Minutes played, under the name. Coloured against fair share so the number
+   carries its own verdict — green is on track, amber is behind, red is well
+   behind — and one glance answers who should come off next. */
+.slot .mins {
   display: block;
-  height: 3px;
-  margin-top: 0.22rem;
-  border-radius: 2px;
-  background: rgba(0, 0, 0, 0.18);
-  overflow: hidden;
+  margin-top: 0.05rem;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  color: #2f6f4f;
 }
 
-.slot .bar i {
-  display: block;
-  height: 100%;
-  background: var(--ok);
+.slot .mins.behind {
+  color: #8a5606;
 }
 
-.slot .bar i.behind {
-  background: var(--warn);
-}
-
-.slot .bar i.short {
-  background: var(--crit);
+.slot .mins.short {
+  color: #a83224;
 }
 
 .slot .nm {
@@ -1248,6 +1244,19 @@ table.plan .qsep {
   letter-spacing: 0.08em;
   cursor: pointer;
   margin-top: 0.8rem;
+}
+
+.cta-big.subs-btn {
+  margin-top: 0.8rem;
+  min-height: 58px;
+  font-size: 1.05rem;
+  background: var(--brand);
+  color: var(--on-brand);
+}
+
+.cta-big:disabled {
+  opacity: 0.42;
+  cursor: default;
 }
 
 .cta-big:active {
