@@ -94,8 +94,17 @@ export interface PlanResult {
   assigned: Map<ID, number>
   /** Fair share in seconds per player. */
   target: Map<ID, number>
-  /** Largest gap between any player's assigned time and their target. */
+  /**
+   * Largest gap between any player's total time and an equal share of the
+   * game. Goal duty makes this non-zero by design: a keeper is on the pitch
+   * for their whole stint while the outfielders around them rotate.
+   */
   spreadSec: number
+  /**
+   * The same measure over outfield time only — what the planner actually
+   * equalises, and the number to judge a chart by.
+   */
+  outfieldSpreadSec: number
 }
 
 // ---------------------------------------------------------------- entry point
@@ -172,38 +181,36 @@ export function generatePlan(input: PlannerInput): PlanResult {
 
   // ---- pass 2: field slots --------------------------------------------
 
-  /**
-   * Seconds each player is already committed to spending in goal.
-   *
-   * Keepers are chosen a whole block at a time, so by the time outfield slots
-   * are filled it is already known that one child will spend twenty minutes in
-   * goal later. Without that knowledge the greedy pass hands them a normal
-   * share of early outfield time and they finish the game well over their fair
-   * share — and repair then has to claw those minutes back out of the earliest
-   * shifts, which is exactly what wrecks the substitution rotation a coach
-   * sees first. Spreading the commitment across the game keeps the outfield
-   * rotation clean and the totals honest.
-   */
-  const gkCommitted = new Map<ID, number>()
-  if (gkSlotDef) {
-    for (let i = 0; i < grid.length; i++) {
-      const who = shifts[i]?.assignments[gkSlotDef.id]
-      if (!who) continue
-      const sl = grid[i]!
-      gkCommitted.set(who, (gkCommitted.get(who) ?? 0) + (sl.endSec - sl.startSec))
-    }
-  }
-  const gkShare = (id: ID): number =>
-    grid.length > 0 ? (gkCommitted.get(id) ?? 0) / grid.length : 0
-
   for (let i = 0; i < grid.length; i++) {
     const slice = grid[i]!
     const shift = shifts[i]!
     const duration = slice.endSec - slice.startSec
     const inc = increments[i] ?? new Map<ID, number>()
-    for (const [id, sec] of inc) {
-      target.set(id, (target.get(id) ?? 0) + sec)
-      outTarget.set(id, (outTarget.get(id) ?? 0) + sec - gkShare(id))
+    for (const [id, sec] of inc) target.set(id, (target.get(id) ?? 0) + sec)
+
+    /**
+     * Outfield time is shared out among whoever is not in goal at the time.
+     *
+     * Goal duty is its own rotation and is deliberately kept out of this
+     * ledger. Counting it here would make the fairness of a child's game
+     * depend on *when* they kept goal — keep first and you are then held back
+     * for the rest of the match, keep last and you finish well over. And
+     * pre-emptively sitting a player because they are down to keep goal later
+     * spends their minutes on a prediction: plans change, half-time changes
+     * them most, and the child who sat gets nothing back. So the planner only
+     * ever reacts to goal time that has actually been served.
+     */
+    const shiftKeeper = gkSlotDef ? shift.assignments[gkSlotDef.id] : undefined
+    const outfielders = [...(increments[i]?.keys() ?? [])].filter(
+      (id) => id !== shiftKeeper,
+    )
+    if (outfielders.length > 0) {
+      const each =
+        (duration * Math.min(fieldSlots.length, outfielders.length)) /
+        outfielders.length
+      for (const id of outfielders) {
+        outTarget.set(id, (outTarget.get(id) ?? 0) + each)
+      }
     }
 
     if (i < from) {
@@ -322,6 +329,7 @@ export function generatePlan(input: PlannerInput): PlanResult {
   smoothBenchRuns(balanceArgs)
 
   const assigned = totalAssigned(shifts, grid, formation)
+  const outAssigned = totalAssigned(shifts, grid, formation, 0, undefined, true)
   return {
     shifts,
     seed,
@@ -329,6 +337,7 @@ export function generatePlan(input: PlannerInput): PlanResult {
     assigned,
     target,
     spreadSec: spreadOf(assigned, target, roster),
+    outfieldSpreadSec: spreadOf(outAssigned, outTarget, roster),
   }
 }
 

@@ -93,18 +93,20 @@ describe('generatePlan — structural integrity', () => {
 })
 
 describe('generatePlan — fairness', () => {
-  it('lands everyone within one shift of their fair share', () => {
+  it('lands everyone within one shift of their share of outfield play', () => {
     const roster = squad(10)
     const plan = generatePlan(input(roster))
     // Assignments are quantised to whole shifts (200s), so one shift is the floor.
-    expect(plan.spreadSec).toBeLessThanOrEqual(210)
+    expect(plan.outfieldSpreadSec).toBeLessThanOrEqual(210)
   })
 
   it('holds up across roster sizes', () => {
     for (const n of [8, 9, 10, 11, 12, 14]) {
       const roster = squad(n)
       const plan = generatePlan(input(roster))
-      expect(plan.spreadSec, `roster of ${n}`).toBeLessThanOrEqual(220)
+      // Shifts are 200s, so a shift and a half is the practical floor once
+      // keepers are unavailable for part of the game.
+      expect(plan.outfieldSpreadSec, `roster of ${n}`).toBeLessThanOrEqual(300)
       const total = [...plan.assigned.values()].reduce((a, b) => a + b, 0)
       expect(total, `roster of ${n}`).toBe(RULES.playersOnField * END)
     }
@@ -469,16 +471,30 @@ describe('substitution rhythm', () => {
     }
   })
 
-  it('does not overplay a keeper for the goal time they are owed', () => {
-    // Twenty minutes in goal is most of a fair share, so a keeper gets less
-    // outfield time. Before this was accounted for they finished seven minutes
-    // over, and repair clawed it back out of the earliest shifts.
+  it('shares outfield play evenly without waiting on who keeps goal', () => {
+    // Nobody is sat down early because they are pencilled in to keep goal
+    // later: plans change, and a child who sat for a stint that never happened
+    // gets nothing back. Outfield time is shared among whoever is not in goal
+    // at the time, which is symmetric whichever half a keeper takes.
     const roster = outfieldSquad()
     const plan = generatePlan(input(roster, { rules: FIVE }))
-    for (const p of roster) {
-      const dev = (plan.assigned.get(p.id) ?? 0) - (plan.target.get(p.id) ?? 0)
-      expect(Math.abs(dev), `${p.id} is ${Math.round(dev / 60)} min off target`)
-        .toBeLessThanOrEqual(300)
-    }
+    expect(plan.outfieldSpreadSec).toBeLessThanOrEqual(300)
+  })
+
+  it('does not hold a player back before their turn in goal', () => {
+    // The first-half bench must not single out the player down to keep goal in
+    // the second half — that is a prediction being paid for with their minutes.
+    const roster = outfieldSquad()
+    const plan = generatePlan(input(roster, { rules: FIVE }))
+    const secondHalfKeeper = plan.shifts[plan.shifts.length - 1]!.assignments['gk']!
+    const firstHalf = plan.shifts.filter((sh) => sh.period <= 2)
+    const sat = firstHalf.filter((sh) => !onField(sh).includes(secondHalfKeeper)).length
+    const typical = Math.max(
+      ...roster
+        .filter((p) => p.id !== secondHalfKeeper)
+        .map((p) => firstHalf.filter((sh) => !onField(sh).includes(p.id)).length),
+    )
+    expect(sat, 'the coming keeper sat out more of the first half than anyone else')
+      .toBeLessThanOrEqual(typical)
   })
 })
