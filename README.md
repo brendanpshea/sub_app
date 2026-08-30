@@ -68,12 +68,40 @@ src/
     formations.ts   7v7 preset library + pitch coordinates
     fairness.ts     fair share, shift grid, formatting
     attendance.ts   status/window invariants, roster reconciliation
+    planner.ts      three-pass shift chart generator + re-planning
   db/         Dexie schema, CRUD, JSON export/import
   ui/
     components/     AppBar, Pitch, Sheet
     screens/        Teams, TeamDetail, Roster, FormationPicker,
-                    Games, GameSetup, Backup
+                    Games, GameSetup, PlanGrid, Backup
 ```
+
+## The planner
+
+Greedy plus a cheap repair pass, not a constraint solver — it runs in
+milliseconds, which is what makes the re-roll button feel instant.
+
+1. **Keepers**, at period granularity. Children need a whole quarter to settle
+   into goal, and it is the tightest constraint. Ordered by fewest goalkeeping
+   periods this season.
+2. **Field slots**, deficit-greedy, tightest slots first. `WEIGHTS` in
+   `planner.ts` is the whole of the intelligence and is meant to be tuned
+   against real rosters.
+3. **Repair**, a bounded local search that closes the remaining spread.
+
+Two properties worth knowing:
+
+**Rolling subs are emergent.** There is no scheduler for them. A continuity
+bonus for staying in the same slot, against a deficit term that dominates,
+means only the two or three most-played children get displaced at each
+boundary and everyone else stays put.
+
+**Avoided positions are a tier, not a weight.** The spec originally scored
+"avoids defence" as a penalty, but any penalty small enough to be overridable
+gets overridden by a two-minute deficit — and a coach who watches their stated
+constraint quietly lose a vote stops trusting the planner. Avoiders are now
+only considered when nobody else can take the slot, which is what "relaxes when
+the pool empties" should have meant.
 
 Keep `domain/` free of React. The planner and the derivations are pure functions
 over plain data — and they are the parts where a bug quietly costs a child
@@ -82,6 +110,7 @@ playing time.
 ## Status
 
 Built: data layer, roster with constraints, formation presets, games and
-attendance with live fair-share preview, backup and restore.
+attendance with live fair-share preview, the planner, the plan grid with
+pinning and re-roll, backup and restore.
 
-Next: the planner and the plan grid, then live mode.
+Next: live mode — the clock, the sub sheet, and self-healing re-plans.

@@ -786,3 +786,156 @@ textarea {
   background: var(--brand-soft);
   color: var(--brand-ink);
 }
+
+/* ---------------------------------------------------------------- plan grid */
+
+.gridwrap {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  -webkit-overflow-scrolling: touch;
+}
+
+table.plan {
+  border-collapse: separate;
+  border-spacing: 2px;
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
+}
+
+table.plan th {
+  font-weight: 700;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+  padding: 0.25rem 0;
+  text-align: center;
+  white-space: nowrap;
+}
+
+table.plan th.nm,
+table.plan td.nm {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--surface);
+  text-align: left;
+  padding-left: 0.5rem;
+  padding-right: 0.35rem;
+  min-width: 68px;
+  max-width: 68px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.76rem;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+table.plan td.tot {
+  text-align: right;
+  padding-right: 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+table.plan .qsep {
+  border-left: 2px solid var(--rule-2);
+}
+
+.cel {
+  display: block;
+  width: 30px;
+  height: 26px;
+  line-height: 26px;
+  border: 0;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #fff;
+  cursor: pointer;
+  padding: 0;
+}
+
+.cel.DEF {
+  background: #2f6f4f;
+}
+.cel.MID {
+  background: #3a6f96;
+}
+.cel.FWD {
+  background: #a8543f;
+}
+.cel.GK {
+  background: #c99a12;
+  color: #241b02;
+}
+.cel.bench {
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-weight: 500;
+}
+
+.cel.pinned {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  margin-top: 0.6rem;
+  padding: 0 0.2rem;
+  font-size: 0.74rem;
+  color: var(--ink-3);
+}
+
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+.slider {
+  width: 100%;
+  margin: 0.3rem 0 0;
+  accent-color: var(--accent);
+  height: 30px;
+}
+
+.slider-ends {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  color: var(--ink-3);
+}
+
+.deficit {
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.deficit.owed {
+  color: var(--warn);
+}
+
+.deficit.over {
+  color: var(--ink-3);
+}
+
+.deficit.ok {
+  color: var(--ok);
+}

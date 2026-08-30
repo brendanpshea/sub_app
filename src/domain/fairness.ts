@@ -89,6 +89,34 @@ export function fairShareSec(rules: GameRules, attendance: Attendance[]): Map<ID
   return share
 }
 
+/**
+ * Fair share broken down per shift, so the planner can ask "who is owed time
+ * *by now*" rather than only at full time. Summing these gives exactly
+ * `fairShareSec`, which is asserted in the tests.
+ */
+export function fairShareByShift(
+  rules: GameRules,
+  attendance: Attendance[],
+  shifts: ShiftSlice[],
+): Map<ID, number>[] {
+  const windows = availabilityWindows(rules, attendance)
+  const intervals = availabilityIntervals(rules, windows)
+
+  return shifts.map((s) => {
+    const inc = new Map<ID, number>()
+    for (const iv of intervals) {
+      const a = Math.max(iv.startSec, s.startSec)
+      const b = Math.min(iv.endSec, s.endSec)
+      if (b <= a) continue
+      const n = iv.available.length
+      if (n === 0) continue
+      const each = ((b - a) * Math.min(rules.playersOnField, n)) / n
+      for (const id of iv.available) inc.set(id, (inc.get(id) ?? 0) + each)
+    }
+    return inc
+  })
+}
+
 // ---------------------------------------------------------------- shift grid
 
 export interface ShiftSlice {

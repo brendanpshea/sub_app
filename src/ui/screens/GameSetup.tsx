@@ -202,11 +202,17 @@ export default function GameSetup() {
           />
         </div>
 
-        <div className="section-label">Next</div>
-        <div className="card pad">
-          <div className="dim">
-            The planner and the shift chart come next. Attendance is saved as you go.
-          </div>
+        <div className="btn-row" style={{ marginTop: '1.4rem' }}>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={inCount < game.rules.playersOnField}
+            onClick={() => nav(`/team/${teamId}/game/${gameId}/plan`)}
+          >
+            {inCount < game.rules.playersOnField
+              ? `Need ${game.rules.playersOnField - inCount} more available`
+              : 'Build the shift chart'}
+          </button>
         </div>
 
         <div className="btn-row" style={{ marginTop: '1.6rem' }}>
