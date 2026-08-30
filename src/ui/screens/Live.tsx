@@ -125,14 +125,23 @@ export default function Live() {
   const shiftIdx =
     s.period > 0 ? currentShiftIndex(grid, rules, s.period, s.periodElapsedSec) : -1
   const currentShift = shiftIdx >= 0 ? plan?.shifts[shiftIdx] : undefined
-  const nextShift = shiftIdx >= 0 ? plan?.shifts[shiftIdx + 1] : undefined
+
+  // Deliberately never crosses into the next period. Bringing a change forward
+  // across the interval would schedule players meant for after the break, and
+  // would offer the next period's goalkeeper change at a throw-in.
+  const peeked = shiftIdx >= 0 ? plan?.shifts[shiftIdx + 1] : undefined
+  const nextShift = peeked?.period === s.period ? peeked : undefined
 
   const gkSlotId = formation.slots.find((sl) => sl.requiredRole === 'GK')?.id
 
-  const subOpts = {
+  const lineupOpts = {
     slots: formation.slots,
     avoids: new Map(roster.map((p) => [p.id, p.avoidGroups])),
   }
+  // During play the goal is left alone: a keeper change is made by tapping the
+  // keeper, or at a period break, never proposed at a stoppage.
+  const subOpts = { ...lineupOpts, ignoreKeeper: true }
+
   const sub = diffToPlan(s.onField, currentShift?.assignments ?? {}, subOpts)
   const due = s.status === 'running' && isSubDue(sub) && !!currentShift
   const showSubSheet = due && s.cumulativeSec >= snoozeUntilSec
@@ -336,7 +345,7 @@ export default function Live() {
         bodies.push({ type: 'ON', playerId, slotId })
       }
     } else {
-      bodies.push(...eventsForDiff(diffToPlan(s!.onField, lineup, subOpts)))
+      bodies.push(...eventsForDiff(diffToPlan(s!.onField, lineup, lineupOpts)))
     }
 
     await appendMany(gameId, bodies, s!.cumulativeSec)
@@ -498,6 +507,43 @@ export default function Live() {
     window.setTimeout(() => setToast(null), 2200)
   }
 
+  /**
+   * Change the goalkeeper by hand.
+   *
+   * Substitutions during play never touch the goal, so this and the period
+   * break are the only ways the gloves move. The new keeper can come off the
+   * bench, or trade places with someone already on the field — the latter
+   * keeps the team at full strength, which matters mid-period.
+   */
+  async function changeKeeper(newId: string) {
+    if (!gkSlotId) return
+    const cur = s!.onField[gkSlotId]
+    if (!cur || cur === newId) return
+
+    const tradeSlot = Object.entries(s!.onField).find(
+      ([sid, pid]) => pid === newId && sid !== gkSlotId,
+    )?.[0]
+
+    const bodies: GameEventBody[] = tradeSlot
+      ? [
+          { type: 'MOVE', playerId: newId, fromSlotId: tradeSlot, toSlotId: gkSlotId },
+          { type: 'MOVE', playerId: cur, fromSlotId: gkSlotId, toSlotId: tradeSlot },
+        ]
+      : [
+          { type: 'OFF', playerId: cur, slotId: gkSlotId },
+          { type: 'ON', playerId: newId, slotId: gkSlotId },
+        ]
+
+    await appendMany(gameId, bodies, s!.cumulativeSec)
+    setSlotSheet(null)
+
+    const nextField: Record<SlotId, string> = { ...s!.onField, [gkSlotId]: newId }
+    if (tradeSlot) nextField[tradeSlot] = cur
+    await replanRemainder(Math.max(0, shiftIdx), nextField)
+    setToast(`${show(newId)} in goal`)
+    window.setTimeout(() => setToast(null), 2200)
+  }
+
   /** Fill an empty position — after an injury, or when a late arrival turns up. */
   async function bringOn(slotId: SlotId, playerId: string) {
     await appendMany(gameId, [{ type: 'ON', playerId, slotId }], s!.cumulativeSec)
@@ -632,7 +678,7 @@ export default function Live() {
               footer={
                 <>
                   <BreakChanges
-                    diff={diffToPlan(s.onField, breakLineup, subOpts)}
+                    diff={diffToPlan(s.onField, breakLineup, lineupOpts)}
                     show={show}
                   />
                   <button
@@ -920,22 +966,44 @@ export default function Live() {
         (() => {
           const label =
             formation.slots.find((x) => x.id === slotSheet.slotId)?.label ?? 'Position'
-          const title = slotSheet.playerId
-            ? `Sub off ${show(slotSheet.playerId)}`
-            : `Who goes in at ${label}?`
+          const isGoal = slotSheet.slotId === gkSlotId
+
+          // Anyone who will go in goal, on the field or off it. A player already
+          // on trades places with the keeper rather than replacing them, so the
+          // team does not drop to ten to change the gloves.
+          const keeperChoices = available.filter(
+            (p) => p.gk !== 'never' && p.id !== slotSheet.playerId,
+          )
+          const choices = isGoal
+            ? keeperChoices.length > 0
+              ? keeperChoices
+              : available.filter((p) => p.id !== slotSheet.playerId)
+            : bench
+
+          const title = isGoal
+            ? 'Who goes in goal?'
+            : slotSheet.playerId
+              ? `Sub off ${show(slotSheet.playerId)}`
+              : `Who goes in at ${label}?`
+
           return (
             <Sheet title={title} onClose={() => setSlotSheet(null)}>
               <div className="dim" style={{ marginBottom: '0.6rem' }}>
-                Most owed first.
+                {isGoal
+                  ? keeperChoices.length > 0
+                    ? 'Someone already on will trade places.'
+                    : 'Nobody here has said they will keep goal.'
+                  : 'Most owed first.'}
               </div>
               <div className="card">
-                {bench.map((p) => (
+                {choices.map((p) => (
                   <button
                     key={p.id}
                     type="button"
                     className="row"
                     onClick={() => {
-                      if (slotSheet.playerId)
+                      if (isGoal) void changeKeeper(p.id)
+                      else if (slotSheet.playerId)
                         void unplannedSwap(slotSheet.playerId, slotSheet.slotId, p.id)
                       else void bringOn(slotSheet.slotId, p.id)
                     }}
@@ -943,8 +1011,12 @@ export default function Live() {
                     <span className="grow">
                       <span className="name">{fullName(p)}</span>
                       <span className="meta">
-                        {minutes(s.playedSec.get(p.id) ?? 0)} played · owed{' '}
-                        {mmss(Math.max(0, owedSec(p.id)))}
+                        {minutes(s.playedSec.get(p.id) ?? 0)} played
+                        {isGoal
+                          ? onFieldIds.has(p.id)
+                            ? ' · on the field'
+                            : ' · on the bench'
+                          : ` · owed ${mmss(Math.max(0, owedSec(p.id)))}`}
                       </span>
                     </span>
                     <span className="chev" aria-hidden="true">
@@ -952,8 +1024,8 @@ export default function Live() {
                     </span>
                   </button>
                 ))}
-                {bench.length === 0 ? (
-                  <div className="pad dim">Nobody is on the bench.</div>
+                {choices.length === 0 ? (
+                  <div className="pad dim">Nobody available.</div>
                 ) : null}
               </div>
             </Sheet>

@@ -321,9 +321,29 @@ export interface SubPlan {
 export function diffToPlan(
   onField: Record<SlotId, ID>,
   target: Record<SlotId, ID>,
-  opts?: { slots?: Slot[]; avoids?: Map<ID, PositionGroup[]> },
+  opts?: {
+    slots?: Slot[]
+    avoids?: Map<ID, PositionGroup[]>
+    /**
+     * Leave the goal alone entirely. Set for substitutions made during play:
+     * changing keeper at a throw-in is awkward and the coach would rather do
+     * it by hand or at a period break.
+     */
+    ignoreKeeper?: boolean
+  },
 ): SubPlan {
   const gkSlotId = (opts?.slots ?? []).find((sl) => sl.requiredRole === 'GK')?.id
+
+  if (opts?.ignoreKeeper && gkSlotId) {
+    const cur = onField[gkSlotId]
+    const tgt = target[gkSlotId]
+    if (cur && tgt && cur !== tgt) {
+      // This shift was planned around a different keeper, so its outfield half
+      // cannot be applied on its own without leaving the team a player short.
+      // Propose nothing and let the goal be settled by hand or at the break.
+      return { swaps: [], moves: [], offOnly: [], onOnly: [] }
+    }
+  }
 
   // Resolve the goal first, then diff the outfield against the field as it will
   // stand once the gloves have changed hands. Doing it the other way round lets
@@ -331,7 +351,7 @@ export function diffToPlan(
   // outfield, leaving the old keeper in goal all game.
   let keeper: KeeperChange | undefined
   let afterKeeper = onField
-  if (gkSlotId) {
+  if (gkSlotId && !opts?.ignoreKeeper) {
     const cur = onField[gkSlotId]
     const tgt = target[gkSlotId]
     if (cur && tgt && cur !== tgt) {

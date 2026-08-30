@@ -430,4 +430,39 @@ describe('diffToPlan — the goal', () => {
     const next = { ...FULL, gk: 'mia', rb: 'zoe' }
     expect(isSubDue(diffToPlan(FULL, next, { slots }))).toBe(true)
   })
+
+  describe('during play the goal is left alone', () => {
+    it('never proposes a keeper change at a stoppage', () => {
+      const next = { ...FULL, gk: 'mia', rb: 'zoe' }
+      const sub = diffToPlan(FULL, next, { slots, ignoreKeeper: true })
+      expect(sub.keeper).toBeUndefined()
+      expect(isSubDue(sub)).toBe(false)
+    })
+
+    it('proposes nothing at all when the plan wants a different keeper', () => {
+      // The outfield half of that shift was planned around the new keeper being
+      // on, so applying it alone would leave the team a player short.
+      const next = { ...FULL, gk: 'mia', rb: 'zoe', st: 'newcomer' }
+      const sub = diffToPlan(FULL, next, { slots, ignoreKeeper: true })
+      expect(sub.swaps).toHaveLength(0)
+      expect(sub.offOnly).toHaveLength(0)
+      expect(sub.onOnly).toHaveLength(0)
+    })
+
+    it('still proposes ordinary outfield swaps', () => {
+      const next = { ...FULL, st: 'newcomer' }
+      const sub = diffToPlan(FULL, next, { slots, ignoreKeeper: true })
+      expect(sub.keeper).toBeUndefined()
+      expect(sub.swaps).toHaveLength(1)
+      expect(sub.swaps[0]!.off).toBe('f')
+      expect(sub.swaps[0]!.on).toBe('newcomer')
+    })
+
+    it('does not drag the keeper out of goal to fill an outfield slot', () => {
+      const next = { ...FULL, st: 'newcomer' }
+      const sub = diffToPlan(FULL, next, { slots, ignoreKeeper: true })
+      const moved = [...sub.swaps.map((w) => w.on), ...sub.onOnly.map((o) => o.playerId)]
+      expect(moved).not.toContain('zoe')
+    })
+  })
 })
