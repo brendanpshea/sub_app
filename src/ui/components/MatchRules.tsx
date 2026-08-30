@@ -1,6 +1,7 @@
 import type { GameRules } from '@/domain/types'
 import { gameLengthSec } from '@/domain/types'
 import { buildShiftGrid } from '@/domain/fairness'
+import { keeperBlockPeriods } from '@/domain/planner'
 
 interface Preset {
   label: string
@@ -29,6 +30,12 @@ export default function MatchRules({
   const shifts = buildShiftGrid(rules)
   const perPeriod = shifts.filter((s) => s.period === 1).length
   const shiftLen = shifts[0] ? (shifts[0].endSec - shifts[0].startSec) / 60 : 0
+  const blockPeriods = keeperBlockPeriods(rules)
+  const keeperCount = Math.ceil(rules.periodCount / blockPeriods)
+  const keeperHint =
+    keeperCount <= 1
+      ? 'One keeper for the whole game.'
+      : `${keeperCount} keepers, ${blockPeriods * rules.periodMinutes} min each. Changes only at period breaks.`
 
   return (
     <>
@@ -87,6 +94,15 @@ export default function MatchRules({
             onChange={(v) => onChange({ playersOnField: v })}
           />
           <Stepper
+            label="Least time in goal (minutes)"
+            value={rules.gkMinMinutes ?? rules.periodMinutes}
+            min={5}
+            max={60}
+            step={5}
+            onChange={(v) => onChange({ gkMinMinutes: v })}
+            hint={keeperHint}
+          />
+          <Stepper
             label="Sub every (minutes)"
             value={rules.shiftMinutes}
             min={1}
@@ -105,6 +121,7 @@ function Stepper({
   value,
   min,
   max,
+  step = 1,
   hint,
   onChange,
 }: {
@@ -112,6 +129,7 @@ function Stepper({
   value: number
   min: number
   max: number
+  step?: number
   hint?: string
   onChange: (v: number) => void
 }) {
@@ -123,7 +141,7 @@ function Stepper({
           type="button"
           aria-label={`Fewer ${label}`}
           disabled={value <= min}
-          onClick={() => onChange(Math.max(min, value - 1))}
+          onClick={() => onChange(Math.max(min, value - step))}
         >
           −
         </button>
@@ -132,7 +150,7 @@ function Stepper({
           type="button"
           aria-label={`More ${label}`}
           disabled={value >= max}
-          onClick={() => onChange(Math.min(max, value + 1))}
+          onClick={() => onChange(Math.min(max, value + step))}
         >
           +
         </button>

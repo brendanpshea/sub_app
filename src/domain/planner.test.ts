@@ -306,8 +306,18 @@ describe('replanFrom', () => {
     }
   })
 
+  // Two dedicated keepers so the goal is out of the way: a keeper is locked into
+  // their block and would otherwise dominate any count of shifts played.
+  function outfieldSquad(): Player[] {
+    return [
+      ...squad(8, { gk: 'never' }),
+      player('k1', { gk: 'preferred' }),
+      player('k2', { gk: 'preferred' }),
+    ]
+  }
+
   it('rebalances the remainder against minutes actually played', () => {
-    const roster = squad(10)
+    const roster = outfieldSquad()
     const base = generatePlan(input(roster))
     // p1 was left on for the whole first half by accident.
     const actual = new Map<string, number>([['p1', 1200]])
@@ -337,7 +347,7 @@ describe('replanFrom', () => {
     // The bug this guards: replayed shifts adding their planned minutes on top
     // of the real minutes already supplied, so everyone looks over-played and
     // the second half is planned against nonsense.
-    const roster = squad(10)
+    const roster = outfieldSquad()
     const base = generatePlan(input(roster))
     const idx = 6
     const played = new Map<string, number>()
@@ -345,10 +355,70 @@ describe('replanFrom', () => {
 
     const result = replanFrom(input(roster), idx, played, {}, base.shifts)
     const second = result.shifts.slice(idx)
-    const counts = roster.map(
-      (p) => second.filter((s) => onField(s).includes(p.id)).length,
-    )
+    const counts = roster
+      .filter((p) => p.gk === 'never') // the keeper is locked to their block
+      .map((p) => second.filter((s) => onField(s).includes(p.id)).length)
     // Even credit in means an even split of what is left.
     expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1)
+  })
+})
+
+describe('keeper rotation frequency', () => {
+  it('gives one keeper a whole half when the minimum is 20 minutes', () => {
+    const roster = squad(10)
+    const plan = generatePlan(
+      input(roster, { rules: { ...RULES, gkMinMinutes: 20 } }),
+    )
+    const keeperByPeriod = new Map<number, string>()
+    for (const s of plan.shifts) {
+      const gk = s.assignments['gk']
+      if (gk) keeperByPeriod.set(s.period, gk)
+    }
+    // Four ten-minute quarters, twenty-minute minimum: two keepers, not four.
+    expect(new Set(keeperByPeriod.values()).size).toBe(2)
+    expect(keeperByPeriod.get(1)).toBe(keeperByPeriod.get(2))
+    expect(keeperByPeriod.get(3)).toBe(keeperByPeriod.get(4))
+    expect(keeperByPeriod.get(1)).not.toBe(keeperByPeriod.get(3))
+  })
+
+  it('falls back to one keeper per period when the minimum is short', () => {
+    const roster = squad(10)
+    const plan = generatePlan(
+      input(roster, { rules: { ...RULES, gkMinMinutes: 5, maxGkPeriodsPerPlayer: 1 } }),
+    )
+    const keeperByPeriod = new Map<number, string>()
+    for (const s of plan.shifts) {
+      const gk = s.assignments['gk']
+      if (gk) keeperByPeriod.set(s.period, gk)
+    }
+    expect(new Set(keeperByPeriod.values()).size).toBe(4)
+  })
+
+  it('never changes keeper inside a period, whatever the minimum', () => {
+    for (const gkMinMinutes of [5, 10, 20, 40]) {
+      const plan = generatePlan(
+        input(squad(10), { rules: { ...RULES, gkMinMinutes, maxGkPeriodsPerPlayer: 4 } }),
+      )
+      const byPeriod = new Map<number, Set<string>>()
+      for (const s of plan.shifts) {
+        const set = byPeriod.get(s.period) ?? new Set<string>()
+        const gk = s.assignments['gk']
+        if (gk) set.add(gk)
+        byPeriod.set(s.period, set)
+      }
+      for (const [period, set] of byPeriod) {
+        expect(set.size, `gkMinMinutes ${gkMinMinutes}, period ${period}`).toBe(1)
+      }
+    }
+  })
+
+  it('keeps one keeper all game when the minimum covers it', () => {
+    const plan = generatePlan(
+      input(squad(10), {
+        rules: { ...RULES, gkMinMinutes: 40, maxGkPeriodsPerPlayer: 4 },
+      }),
+    )
+    const keepers = new Set(plan.shifts.map((s) => s.assignments['gk']))
+    expect(keepers.size).toBe(1)
   })
 })

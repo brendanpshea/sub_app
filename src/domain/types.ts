@@ -32,7 +32,12 @@ export interface GameRules {
   shiftMinutes: number //         3 — target sub cadence, not a hard rule
   subMode: 'stoppage' | 'window'
   maxPlayersPerSub: number //     2 — soft cap; deficit absorbs the remainder
-  gkRotation: 'byPeriod' | 'byShift'
+  /**
+   * Shortest stint in goal, in minutes, rounded up to whole periods. A keeper
+   * change is awkward to make at a throw-in and wants a natural break, so this
+   * governs how often one happens. Defaults to a single period when unset.
+   */
+  gkMinMinutes?: number
   maxGkPeriodsPerPlayer: number
   maxConsecutiveShifts: number
   seasonCarryWeight: number //    0..1 — how hard last week's debt pulls
@@ -46,7 +51,7 @@ export const DEFAULT_RULES: GameRules = {
   shiftMinutes: 3,
   subMode: 'stoppage',
   maxPlayersPerSub: 2,
-  gkRotation: 'byPeriod',
+  gkMinMinutes: 20,
   maxGkPeriodsPerPlayer: 2,
   maxConsecutiveShifts: 4,
   seasonCarryWeight: 0.5,

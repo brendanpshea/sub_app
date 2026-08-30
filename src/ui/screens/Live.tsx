@@ -305,11 +305,36 @@ export default function Live() {
 
   async function confirmSub(diff: SubPlan, targetIndex: number, plannedRelSec: number) {
     const offs: GameEventBody[] = []
+    const moves: GameEventBody[] = []
     const ons: GameEventBody[] = []
 
-    // Only the players actually changing move. Anyone staying on keeps the
-    // position they are already standing in, so a substitution is two names,
-    // not a reshuffle of the whole team.
+    // The goal is not an interchangeable shirt, so a keeper change is its own
+    // pair of events: either the two trade places on the field, or the gloves
+    // go to someone off the bench and the old keeper comes off.
+    if (diff.keeper) {
+      const k = diff.keeper
+      if (k.tradeSlotId) {
+        moves.push({
+          type: 'MOVE',
+          playerId: k.on,
+          fromSlotId: k.tradeSlotId,
+          toSlotId: k.gkSlotId,
+        })
+        moves.push({
+          type: 'MOVE',
+          playerId: k.off,
+          fromSlotId: k.gkSlotId,
+          toSlotId: k.tradeSlotId,
+        })
+      } else {
+        offs.push({ type: 'OFF', playerId: k.off, slotId: k.gkSlotId })
+        ons.push({ type: 'ON', playerId: k.on, slotId: k.gkSlotId })
+      }
+    }
+
+    // Outfield: only the players actually changing move. Anyone staying on
+    // keeps the position they are already standing in, so a substitution is
+    // two names, not a reshuffle of the whole team.
     for (const sw of diff.swaps) {
       offs.push({ type: 'OFF', playerId: sw.off, slotId: sw.offSlot })
       ons.push({ type: 'ON', playerId: sw.on, slotId: sw.onSlot })
@@ -321,8 +346,8 @@ export default function Live() {
       ons.push({ type: 'ON', playerId: o.playerId, slotId: o.slotId })
     }
 
-    // Off first so the shirts are free, then on.
-    await appendMany(gameId, [...offs, ...ons], s!.cumulativeSec)
+    // Off first so the shirts are free, then the goal, then on.
+    await appendMany(gameId, [...offs, ...moves, ...ons], s!.cumulativeSec)
     setManualSub(false)
     setSnoozeUntilSec(0)
     const drift = s!.periodElapsedSec - plannedRelSec
@@ -657,6 +682,22 @@ export default function Live() {
                   <div className="late">{mmss(-drift)} early</div>
                 ) : null}
               </div>
+
+              {diff.keeper ? (
+                <div className="swap keeper">
+                  <span className="side">
+                    {show(diff.keeper.off)}
+                    <em>out of goal</em>
+                  </span>
+                  <span className="arrow" aria-hidden="true">
+                    &#9917;
+                  </span>
+                  <span className="side on">
+                    {show(diff.keeper.on)}
+                    <em>{diff.keeper.tradeSlotId ? 'swaps into goal' : 'into goal'}</em>
+                  </span>
+                </div>
+              ) : null}
 
               {diff.swaps.map((sw) => (
                 <div className="swap" key={`${sw.off}-${sw.on}`}>

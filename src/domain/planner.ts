@@ -260,7 +260,19 @@ export function generatePlan(input: PlannerInput): PlanResult {
 
   // ---- pass 3: repair --------------------------------------------------
 
-  repair({ shifts, grid, formation, roster, windows, pins, pairings, from, byId, target })
+  repair({
+    shifts,
+    grid,
+    formation,
+    roster,
+    windows,
+    pins,
+    pairings,
+    from,
+    byId,
+    target,
+    ...(input.startingCredit ? { startingCredit: input.startingCredit } : {}),
+  })
 
   const assigned = totalAssigned(shifts, grid, formation)
   return {
@@ -299,7 +311,15 @@ function assignKeepers(a: KeeperArgs): void {
     if (indices.every((i) => i < a.from)) {
       const kept = indices[0] !== undefined ? a.shifts[indices[0]] : undefined
       const who = kept?.assignments[a.gkSlotDef.id]
-      if (who) a.keeperOf.set(block.key, who)
+      if (who) {
+        a.keeperOf.set(block.key, who)
+        // Already played, but it still counts against their turns in goal —
+        // otherwise a re-plan can hand the same child a second stint.
+        a.gkPeriodsThisGame.set(
+          who,
+          (a.gkPeriodsThisGame.get(who) ?? 0) + block.periods.length,
+        )
+      }
       continue
     }
 
@@ -363,7 +383,11 @@ function assignKeepers(a: KeeperArgs): void {
     }
 
     a.keeperOf.set(block.key, chosen)
-    a.gkPeriodsThisGame.set(chosen, (a.gkPeriodsThisGame.get(chosen) ?? 0) + 1)
+    // A block can span several periods, and the per-game cap counts periods.
+    a.gkPeriodsThisGame.set(
+      chosen,
+      (a.gkPeriodsThisGame.get(chosen) ?? 0) + block.periods.length,
+    )
     for (const i of indices) {
       if (i < a.from) continue
       const shift = a.shifts[i]
@@ -377,33 +401,46 @@ interface KeeperBlock {
   startSec: number
   endSec: number
   shiftIndices: number[]
+  periods: number[]
+}
+
+/**
+ * How long one keeper stays in goal.
+ *
+ * Always a whole number of periods, and never fewer than one: swapping keepers
+ * mid-quarter means doing it at a throw-in, which is fiddly and leaves a goal
+ * briefly unguarded. `gkMinMinutes` then widens the block further — 20 minutes
+ * of ten-minute quarters gives two keepers a half each rather than four
+ * keepers a quarter each.
+ */
+export function keeperBlockPeriods(rules: GameRules): number {
+  const want = rules.gkMinMinutes ?? rules.periodMinutes
+  const n = Math.ceil(want / Math.max(1, rules.periodMinutes))
+  return Math.max(1, Math.min(rules.periodCount, n))
 }
 
 function keeperBlocks(rules: GameRules, grid: ShiftSlice[]): KeeperBlock[] {
-  if (rules.gkRotation === 'byShift') {
-    return grid.map((s) => ({
-      key: s.index,
-      startSec: s.startSec,
-      endSec: s.endSec,
-      shiftIndices: [s.index],
-    }))
-  }
-  const byPeriod = new Map<number, KeeperBlock>()
+  const per = keeperBlockPeriods(rules)
+  const byKey = new Map<number, KeeperBlock>()
+
   for (const s of grid) {
-    const b = byPeriod.get(s.period)
+    const key = Math.floor((s.period - 1) / per)
+    const b = byKey.get(key)
     if (b) {
       b.endSec = Math.max(b.endSec, s.endSec)
       b.shiftIndices.push(s.index)
+      if (!b.periods.includes(s.period)) b.periods.push(s.period)
     } else {
-      byPeriod.set(s.period, {
-        key: s.period,
+      byKey.set(key, {
+        key,
         startSec: s.startSec,
         endSec: s.endSec,
         shiftIndices: [s.index],
+        periods: [s.period],
       })
     }
   }
-  return [...byPeriod.values()].sort((a, b) => a.key - b.key)
+  return [...byKey.values()].sort((a, b) => a.key - b.key)
 }
 
 // ---------------------------------------------------------------- scoring
@@ -479,6 +516,7 @@ interface RepairArgs {
   from: number
   byId: Map<ID, Player>
   target: Map<ID, number>
+  startingCredit?: Map<ID, number>
 }
 
 /**
@@ -505,28 +543,8 @@ function repair(a: RepairArgs): void {
     return universallyAvoided.has(slot.group)
   }
 
-  for (let iter = 0; iter < REPAIR_ITERATIONS; iter++) {
-    const assigned = totalAssigned(a.shifts, a.grid, a.formation)
-
-    let over: Player | undefined
-    let under: Player | undefined
-    let overDev = -Infinity
-    let underDev = Infinity
-    for (const p of a.roster) {
-      const dev = (assigned.get(p.id) ?? 0) - (a.target.get(p.id) ?? 0)
-      if (dev > overDev) {
-        overDev = dev
-        over = p
-      }
-      if (dev < underDev) {
-        underDev = dev
-        under = p
-      }
-    }
-    if (!over || !under || over.id === under.id) return
-    if (overDev - underDev <= REPAIR_TOLERANCE_SEC) return
-
-    let swapped = false
+  /** Hand one shift from `over` to `under`, if any shift legally allows it. */
+  const trySwap = (over: Player, under: Player): boolean => {
     for (let i = a.from; i < a.shifts.length; i++) {
       const shift = a.shifts[i]!
       const slice = a.grid[i]!
@@ -537,9 +555,10 @@ function repair(a: RepairArgs): void {
       if (entries.some(([, pid]) => pid === under.id)) continue
 
       const found = entries.find(([slotId, pid]) => {
-        if (pid !== over!.id) return false
+        if (pid !== over.id) return false
+        // The goal is settled a whole block at a time and is not repair's to move.
         if (slotId === gkSlotId) return false
-        if (!mayPlay(under!, slotId)) return false
+        if (!mayPlay(under, slotId)) return false
         return !a.pins.some((p) => p.shiftIndex === i && p.slotId === slotId)
       })
       if (!found) continue
@@ -550,8 +569,42 @@ function repair(a: RepairArgs): void {
       if (breaksKeepApart(under.id, others, a.pairings)) continue
 
       shift.assignments[found[0]] = under.id
-      swapped = true
-      break
+      return true
+    }
+    return false
+  }
+
+  for (let iter = 0; iter < REPAIR_ITERATIONS; iter++) {
+    // Mirror the scoring pass: when real minutes were supplied for the shifts
+    // already played, use those rather than the minutes those shifts were
+    // planned to produce, or the first half gets counted twice over.
+    const assigned = totalAssigned(
+      a.shifts,
+      a.grid,
+      a.formation,
+      a.startingCredit ? a.from : 0,
+      a.startingCredit,
+    )
+    const devs = a.roster
+      .map((p) => ({ p, dev: (assigned.get(p.id) ?? 0) - (a.target.get(p.id) ?? 0) }))
+      .sort((x, y) => y.dev - x.dev)
+
+    // Work down from the most over-played and up from the most under-played
+    // rather than giving up on the first pair that cannot be swapped. A keeper
+    // is often the most over-played player and cannot be moved out of goal, and
+    // stopping there used to abandon imbalances elsewhere that were fixable.
+    let swapped = false
+    for (const over of devs) {
+      if (swapped) break
+      for (let j = devs.length - 1; j >= 0; j--) {
+        const under = devs[j]!
+        if (under.p.id === over.p.id) break
+        if (over.dev - under.dev <= REPAIR_TOLERANCE_SEC) break
+        if (trySwap(over.p, under.p)) {
+          swapped = true
+          break
+        }
+      }
     }
     if (!swapped) return
   }
@@ -587,9 +640,11 @@ function totalAssigned(
   shifts: PlannedShift[],
   grid: ShiftSlice[],
   formation: Formation,
+  from = 0,
+  base?: Map<ID, number>,
 ): Map<ID, number> {
-  const out = new Map<ID, number>()
-  for (let i = 0; i < shifts.length; i++) {
+  const out = new Map<ID, number>(base ?? [])
+  for (let i = from; i < shifts.length; i++) {
     const shift = shifts[i]!
     const slice = grid[i]
     if (!slice) continue

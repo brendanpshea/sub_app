@@ -1224,6 +1224,24 @@ table.plan .qsep {
   font-variant-numeric: tabular-nums;
 }
 
+.swap.keeper {
+  padding-bottom: 0.45rem;
+  margin-bottom: 0.55rem;
+  border-bottom: 1px dashed var(--rule-2);
+}
+
+.swap.keeper .side {
+  background: #f8e6b0;
+  border-color: #d9b64a;
+  color: #35290a;
+}
+
+.swap.keeper .side.on {
+  background: #f2c23a;
+  border-color: #c99a12;
+  color: #2a2005;
+}
+
 .swap .arrow {
   text-align: center;
   color: var(--ink-3);

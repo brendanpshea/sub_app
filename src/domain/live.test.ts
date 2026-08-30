@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { currentShiftIndex, deriveLive, diffToPlan, secondsUntilShift } from './live'
+import {
+  currentShiftIndex,
+  deriveLive,
+  diffToPlan,
+  isSubDue,
+  secondsUntilShift,
+} from './live'
 import { BUILT_IN_FORMATIONS } from './formations'
 import { buildShiftGrid } from './fairness'
 import { DEFAULT_RULES, type GameEvent, type GameEventBody } from './types'
@@ -360,5 +366,68 @@ describe('diffToPlan', () => {
   it('handles going a player short', () => {
     const sub = diffToPlan({ lb: 'a', cm: 'b' }, { lb: 'a' })
     expect(sub.offOnly).toEqual([{ playerId: 'b', slotId: 'cm' }])
+  })
+})
+
+describe('diffToPlan — the goal', () => {
+  const slots = FORMATION.slots
+  const FULL = { gk: 'zoe', lb: 'a', rb: 'b', lm: 'c', cm: 'd', rm: 'e', st: 'f' }
+
+  it('actually changes the keeper when the plan says so', () => {
+    // The bug this guards: treating the goal as an ordinary shirt let the
+    // incoming keeper be placed outfield while the old one stayed in goal all
+    // game, with the sub sheet reporting a perfectly normal-looking swap.
+    const next = { ...FULL, gk: 'mia', rb: 'zoe' }
+    const sub = diffToPlan(FULL, next, { slots })
+    expect(sub.keeper).toBeDefined()
+    expect(sub.keeper!.off).toBe('zoe')
+    expect(sub.keeper!.on).toBe('mia')
+  })
+
+  it('trades places when the new keeper is already on the field', () => {
+    const next = { ...FULL, gk: 'b', rb: 'zoe' }
+    const sub = diffToPlan(FULL, next, { slots })
+    expect(sub.keeper).toEqual({
+      off: 'zoe',
+      on: 'b',
+      gkSlotId: 'gk',
+      tradeSlotId: 'rb',
+    })
+    // Nobody else is disturbed by a keeper change.
+    expect(sub.swaps).toHaveLength(0)
+    expect(sub.offOnly).toHaveLength(0)
+    expect(sub.onOnly).toHaveLength(0)
+  })
+
+  it('brings a keeper off the bench without a trade', () => {
+    const next = { ...FULL, gk: 'mia' }
+    const sub = diffToPlan(FULL, next, { slots })
+    expect(sub.keeper).toEqual({ off: 'zoe', on: 'mia', gkSlotId: 'gk' })
+    expect(sub.keeper!.tradeSlotId).toBeUndefined()
+    expect(sub.swaps).toHaveLength(0)
+  })
+
+  it('lets the outgoing keeper come back on outfield in the same change', () => {
+    // Mia takes the gloves, Zoe goes to the bench, and the plan wants Zoe at
+    // right back in place of b. That is one keeper change plus one swap.
+    const next = { ...FULL, gk: 'mia', rb: 'zoe' }
+    const sub = diffToPlan(FULL, next, { slots })
+    expect(sub.keeper!.on).toBe('mia')
+    expect(sub.swaps).toHaveLength(1)
+    expect(sub.swaps[0]!.off).toBe('b')
+    expect(sub.swaps[0]!.on).toBe('zoe')
+    expect(sub.swaps[0]!.onSlot).toBe('rb')
+  })
+
+  it('says nothing about the goal when the keeper is unchanged', () => {
+    const next = { ...FULL, st: 'z' }
+    const sub = diffToPlan(FULL, next, { slots })
+    expect(sub.keeper).toBeUndefined()
+    expect(sub.swaps).toHaveLength(1)
+  })
+
+  it('counts a keeper change as a substitution being due', () => {
+    const next = { ...FULL, gk: 'mia', rb: 'zoe' }
+    expect(isSubDue(diffToPlan(FULL, next, { slots }))).toBe(true)
   })
 })

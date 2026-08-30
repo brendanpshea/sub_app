@@ -279,9 +279,27 @@ export interface Swap {
   onSlot: SlotId
 }
 
+export interface KeeperChange {
+  off: ID
+  on: ID
+  gkSlotId: SlotId
+  /**
+   * Set when the incoming keeper was already on the field: the two trade
+   * places. Unset means the new keeper comes off the bench and the old one
+   * goes to it.
+   */
+  tradeSlotId?: SlotId
+}
+
 export interface SubPlan {
+  /**
+   * A change of goalkeeper, resolved separately from outfield swaps. The goal
+   * is not an interchangeable shirt — someone has to take the gloves — so this
+   * is the one case where a player already on the field does move position.
+   */
+  keeper?: KeeperChange
   swaps: Swap[]
-  /** Always empty: a substitution never repositions the players staying on. */
+  /** Always empty: an outfield substitution never repositions anyone staying on. */
   moves: { playerId: ID; fromSlotId: SlotId; toSlotId: SlotId }[]
   offOnly: { playerId: ID; slotId: SlotId }[]
   onOnly: { playerId: ID; slotId: SlotId }[]
@@ -305,15 +323,50 @@ export function diffToPlan(
   target: Record<SlotId, ID>,
   opts?: { slots?: Slot[]; avoids?: Map<ID, PositionGroup[]> },
 ): SubPlan {
-  const currentIds = new Set(Object.values(onField))
-  const targetIds = new Set(Object.values(target))
+  const gkSlotId = (opts?.slots ?? []).find((sl) => sl.requiredRole === 'GK')?.id
+
+  // Resolve the goal first, then diff the outfield against the field as it will
+  // stand once the gloves have changed hands. Doing it the other way round lets
+  // the incoming keeper be treated as an ordinary substitute and quietly placed
+  // outfield, leaving the old keeper in goal all game.
+  let keeper: KeeperChange | undefined
+  let afterKeeper = onField
+  if (gkSlotId) {
+    const cur = onField[gkSlotId]
+    const tgt = target[gkSlotId]
+    if (cur && tgt && cur !== tgt) {
+      const tradeSlotId = Object.entries(onField).find(
+        ([sid, pid]) => pid === tgt && sid !== gkSlotId,
+      )?.[0]
+      keeper = tradeSlotId
+        ? { off: cur, on: tgt, gkSlotId, tradeSlotId }
+        : { off: cur, on: tgt, gkSlotId }
+
+      afterKeeper = { ...onField, [gkSlotId]: tgt }
+      if (tradeSlotId) afterKeeper[tradeSlotId] = cur
+      // Without a trade the outgoing keeper is on the bench, and may be picked
+      // up again below if the plan wants them outfield.
+    }
+  }
+
+  const outfieldNow: Record<SlotId, ID> = {}
+  for (const [sid, pid] of Object.entries(afterKeeper)) {
+    if (sid !== gkSlotId) outfieldNow[sid] = pid
+  }
+  const outfieldTarget: Record<SlotId, ID> = {}
+  for (const [sid, pid] of Object.entries(target)) {
+    if (sid !== gkSlotId) outfieldTarget[sid] = pid
+  }
+
+  const currentIds = new Set(Object.values(outfieldNow))
+  const targetIds = new Set(Object.values(outfieldTarget))
 
   const offs: { playerId: ID; slotId: SlotId }[] = []
-  for (const [slotId, playerId] of Object.entries(onField)) {
+  for (const [slotId, playerId] of Object.entries(outfieldNow)) {
     if (!targetIds.has(playerId)) offs.push({ playerId, slotId })
   }
   const ons: { playerId: ID; slotId: SlotId }[] = []
-  for (const [slotId, playerId] of Object.entries(target)) {
+  for (const [slotId, playerId] of Object.entries(outfieldTarget)) {
     if (!currentIds.has(playerId)) ons.push({ playerId, slotId })
   }
 
@@ -345,6 +398,7 @@ export function diffToPlan(
   }
 
   return {
+    ...(keeper ? { keeper } : {}),
     swaps,
     moves: [],
     offOnly: free,
@@ -353,5 +407,10 @@ export function diffToPlan(
 }
 
 export function isSubDue(sub: SubPlan): boolean {
-  return sub.swaps.length > 0 || sub.offOnly.length > 0 || sub.onOnly.length > 0
+  return (
+    sub.keeper !== undefined ||
+    sub.swaps.length > 0 ||
+    sub.offOnly.length > 0 ||
+    sub.onOnly.length > 0
+  )
 }
