@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildShiftGrid, fairShareSec } from './fairness'
+import { buildShiftGrid, fairShareSec, outfieldShareUpTo } from './fairness'
 import { DEFAULT_RULES, gameLengthSec, type Attendance, type GameRules } from './types'
 
 const RULES: GameRules = { ...DEFAULT_RULES } // 7v7, 4 × 10 min, 3 min shifts
@@ -122,5 +122,75 @@ describe('buildShiftGrid', () => {
   it('always produces at least one shift per period', () => {
     const long = buildShiftGrid({ ...RULES, shiftMinutes: 60 })
     expect(long.length).toBe(RULES.periodCount)
+  })
+})
+
+describe('outfieldShareUpTo', () => {
+  const OUT_SLOTS = 6 // 7v7 less the keeper
+
+  it('gives a keeper no share of field play while they are in goal', () => {
+    // Ten available, one in goal for the first half.
+    const attendance = present(...names(10))
+    const spans = [{ playerId: 'p1', fromSec: 0, toSec: HALF }]
+    const share = outfieldShareUpTo(RULES, attendance, spans, OUT_SLOTS, HALF)
+    expect(share.get('p1')).toBe(0)
+    // The other nine split the six field positions between them.
+    expect(share.get('p2')).toBeCloseTo((HALF * 6) / 9, 6)
+  })
+
+  it('lets a keeper take an even share of the half they come back for', () => {
+    // The rule stated plainly: keep goal for the first half, then share the
+    // second half evenly with everyone else. Nothing is owed for the goal time.
+    const attendance = present(...names(10))
+    const spans = [
+      { playerId: 'p1', fromSec: 0, toSec: HALF },
+      { playerId: 'p2', fromSec: HALF, toSec: GAME },
+    ]
+    const atHalf = outfieldShareUpTo(RULES, attendance, spans, OUT_SLOTS, HALF)
+    const full = outfieldShareUpTo(RULES, attendance, spans, OUT_SLOTS, GAME)
+
+    // p1 comes out of goal owed nothing and having earned nothing.
+    expect(atHalf.get('p1')).toBe(0)
+    // Across the second half they earn exactly what everyone else does.
+    const p1Second = (full.get('p1') ?? 0) - (atHalf.get('p1') ?? 0)
+    const p3Second = (full.get('p3') ?? 0) - (atHalf.get('p3') ?? 0)
+    expect(p1Second).toBeCloseTo(p3Second, 6)
+  })
+
+  it('treats both keepers alike, whichever half they took', () => {
+    const attendance = present(...names(10))
+    const spans = [
+      { playerId: 'p1', fromSec: 0, toSec: HALF },
+      { playerId: 'p2', fromSec: HALF, toSec: GAME },
+    ]
+    const full = outfieldShareUpTo(RULES, attendance, spans, OUT_SLOTS, GAME)
+    // Symmetry is the whole point: keeping first must not cost more than
+    // keeping last, and neither should need predicting in advance.
+    expect(full.get('p1')).toBeCloseTo(full.get('p2') ?? 0, 6)
+  })
+
+  it('allocates every field position and no more', () => {
+    const attendance = present(...names(10))
+    const spans = [{ playerId: 'p1', fromSec: 0, toSec: GAME }]
+    const share = outfieldShareUpTo(RULES, attendance, spans, OUT_SLOTS, GAME)
+    const total = [...share.values()].reduce((a, b) => a + b, 0)
+    expect(total).toBeCloseTo(OUT_SLOTS * GAME, 4)
+  })
+
+  it('still works with nobody in goal', () => {
+    const attendance = present(...names(10))
+    const share = outfieldShareUpTo(RULES, attendance, [], OUT_SLOTS, GAME)
+    for (const id of names(10)) {
+      expect(share.get(id)).toBeCloseTo((GAME * 6) / 10, 6)
+    }
+  })
+
+  it('excludes a player who has not arrived yet', () => {
+    const attendance: Attendance[] = [
+      ...present(...names(9)),
+      { playerId: 'late', status: 'late', availableFromSec: HALF },
+    ]
+    const share = outfieldShareUpTo(RULES, attendance, [], OUT_SLOTS, GAME)
+    expect(share.get('late')).toBeCloseTo((HALF * 6) / 10, 6)
   })
 })

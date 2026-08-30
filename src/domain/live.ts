@@ -21,6 +21,12 @@ import { emptyGroupRecord } from './types'
 
 export type ClockStatus = 'pre' | 'running' | 'paused' | 'break' | 'final'
 
+export interface KeeperSpan {
+  playerId: ID
+  fromSec: number
+  toSec: number
+}
+
 export interface LiveState {
   status: ClockStatus
   running: boolean
@@ -36,6 +42,11 @@ export interface LiveState {
   gkSec: Map<ID, number>
   secByGroup: Map<ID, Record<PositionGroup, number>>
   gkPeriods: Map<ID, Set<number>>
+  /**
+   * When each keeper was actually in goal. Needed to work out everyone's share
+   * of outfield play, since whoever is in goal is not competing for it.
+   */
+  keeperSpans: KeeperSpan[]
   goals: Map<ID, number>
   assists: Map<ID, number>
   shots: Map<ID, number>
@@ -78,6 +89,7 @@ export function deriveLive(
     gkSec: new Map(),
     secByGroup: new Map(),
     gkPeriods: new Map(),
+    keeperSpans: [],
     goals: new Map(),
     assists: new Map(),
     shots: new Map(),
@@ -95,6 +107,23 @@ export function deriveLive(
   let periodStartCumulative = 0
   /** playerId -> { slotId, sinceSec } for the stint currently open. */
   const open = new Map<ID, { slotId: SlotId; sinceSec: number }>()
+  let inGoal: { playerId: ID; fromSec: number } | null = null
+
+  const leaveGoal = (atSec: number): void => {
+    if (!inGoal) return
+    if (atSec > inGoal.fromSec) {
+      state.keeperSpans.push({
+        playerId: inGoal.playerId,
+        fromSec: inGoal.fromSec,
+        toSec: atSec,
+      })
+    }
+    inGoal = null
+  }
+  const enterGoal = (playerId: ID, atSec: number): void => {
+    leaveGoal(atSec)
+    inGoal = { playerId, fromSec: atSec }
+  }
 
   const clockMs = (wallAt: number): number =>
     cumulativeMs + (runningSince !== null ? Math.max(0, wallAt - runningSince) : 0)
@@ -158,6 +187,7 @@ export function deriveLive(
         closeStint(e.body.playerId, tSec)
         open.set(e.body.playerId, { slotId: e.body.slotId, sinceSec: tSec })
         state.onField[e.body.slotId] = e.body.playerId
+        if (e.body.slotId === gkSlotId) enterGoal(e.body.playerId, tSec)
         if (e.body.slotId === gkSlotId && state.period > 0) {
           const set = state.gkPeriods.get(e.body.playerId) ?? new Set<number>()
           set.add(state.period)
@@ -167,6 +197,7 @@ export function deriveLive(
 
       case 'OFF':
         closeStint(e.body.playerId, tSec)
+        if (e.body.slotId === gkSlotId) leaveGoal(tSec)
         if (state.onField[e.body.slotId] === e.body.playerId) {
           delete state.onField[e.body.slotId]
         }
@@ -177,6 +208,8 @@ export function deriveLive(
         // only the group the seconds are credited to changes.
         closeStint(e.body.playerId, tSec)
         open.set(e.body.playerId, { slotId: e.body.toSlotId, sinceSec: tSec })
+        if (e.body.toSlotId === gkSlotId) enterGoal(e.body.playerId, tSec)
+        else if (e.body.fromSlotId === gkSlotId) leaveGoal(tSec)
         if (state.onField[e.body.fromSlotId] === e.body.playerId) {
           delete state.onField[e.body.fromSlotId]
         }
@@ -221,6 +254,17 @@ export function deriveLive(
       state.gkSec.set(playerId, (state.gkSec.get(playerId) ?? 0) + dur)
     }
     state.slotOf.set(playerId, stint.slotId)
+  }
+
+  if (inGoal) {
+    const span = inGoal as { playerId: ID; fromSec: number }
+    if (nowSec > span.fromSec) {
+      state.keeperSpans.push({
+        playerId: span.playerId,
+        fromSec: span.fromSec,
+        toSec: nowSec,
+      })
+    }
   }
 
   state.running = runningSince !== null
@@ -425,6 +469,21 @@ export function diffToPlan(
     offOnly: free,
     onOnly: ons.slice(matched),
   }
+}
+
+/**
+ * Seconds each player has spent on the field but not in goal.
+ *
+ * This is the ledger the planner shares out and the live screen judges "owed"
+ * by: goal duty is rotated on its own and neither earns credit nor creates a
+ * debt, so a keeper leaves the goal level with everyone else.
+ */
+export function outfieldPlayed(state: LiveState): Map<ID, number> {
+  const out = new Map<ID, number>()
+  for (const [id, sec] of state.playedSec) {
+    out.set(id, Math.max(0, sec - (state.gkSec.get(id) ?? 0)))
+  }
+  return out
 }
 
 export type FieldChangeKind = 'none' | 'swap' | 'sub' | 'fill'

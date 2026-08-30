@@ -9,16 +9,16 @@ import { reconcileAttendance } from '@/domain/attendance'
 import { BUILT_IN_FORMATIONS, findFormation } from '@/domain/formations'
 import {
   buildShiftGrid,
-  fairShareSec,
-  fairShareUpTo,
   minutes,
   mmss,
+  outfieldShareUpTo,
 } from '@/domain/fairness'
 import {
   currentShiftIndex,
   deriveLive,
   diffToPlan,
   isSubDue,
+  outfieldPlayed,
   planFieldChange,
   secondsUntilShift,
   type LiveState,
@@ -123,6 +123,8 @@ export default function Live() {
     return p ? displayName(p, available) : '?'
   }
 
+  const gkSlotId = formation.slots.find((sl) => sl.requiredRole === 'GK')?.id
+
   const shiftIdx =
     s.period > 0 ? currentShiftIndex(grid, rules, s.period, s.periodElapsedSec) : -1
   const currentShift = shiftIdx >= 0 ? plan?.shifts[shiftIdx] : undefined
@@ -133,7 +135,6 @@ export default function Live() {
   const peeked = shiftIdx >= 0 ? plan?.shifts[shiftIdx + 1] : undefined
   const nextShift = peeked?.period === s.period ? peeked : undefined
 
-  const gkSlotId = formation.slots.find((sl) => sl.requiredRole === 'GK')?.id
   const slotLabel = (id: SlotId): string =>
     formation.slots.find((x) => x.id === id)?.label ?? ''
   const slotGroup = (id: SlotId): string =>
@@ -180,20 +181,34 @@ export default function Live() {
     ? secondsUntilShift(nextShift, rules, s.periodElapsedSec)
     : periodSec - s.periodElapsedSec
 
-  // Fair share, both for the whole game and for right now.
-  const fullShare = fairShareSec(rules, attendance)
-  const shareNow = fairShareUpTo(rules, attendance, s.cumulativeSec)
+  /**
+   * Everything about who goes on next is judged on outfield play, matching how
+   * the planner shares it out: goal duty is rotated separately and neither
+   * earns credit nor leaves a debt. Judging it on total minutes would show a
+   * keeper as over-played the moment they left the goal and quietly push them
+   * to the back of the queue for the rest of the game.
+   */
+  const outPlayed = outfieldPlayed(s)
+  const shareNow = outfieldShareUpTo(
+    rules,
+    attendance,
+    s.keeperSpans,
+    formation.slots.filter((sl) => sl.requiredRole !== 'GK').length,
+    s.cumulativeSec,
+  )
+
+  function owedSec(playerId: string): number {
+    return (shareNow.get(playerId) ?? 0) - (outPlayed.get(playerId) ?? 0)
+  }
 
   function toneFor(playerId: string): 'ok' | 'behind' | 'short' {
-    const played = s!.playedSec.get(playerId) ?? 0
-    const owed = (shareNow.get(playerId) ?? 0) - played
+    // A keeper is exactly where they should be, so the figure on their chip is
+    // never a reproach.
+    if (playerId === s!.onField[gkSlotId ?? '']) return 'ok'
+    const owed = owedSec(playerId)
     if (owed > 180) return 'short'
     if (owed > 60) return 'behind'
     return 'ok'
-  }
-
-  function owedSec(playerId: string): number {
-    return (shareNow.get(playerId) ?? 0) - (s!.playedSec.get(playerId) ?? 0)
   }
 
   const onFieldIds = new Set(Object.values(s.onField))
@@ -265,7 +280,7 @@ export default function Live() {
       seed: plan.seed,
       existing: shifts,
       fromShiftIndex: shiftIndex + 1,
-      ...(started ? { startingCredit: s!.playedSec } : {}),
+      ...(started ? { startingCredit: outPlayed } : {}),
     })
     await savePlan(gameId, result.shifts, result.seed, pins)
   }
@@ -285,7 +300,7 @@ export default function Live() {
       seed: Math.floor(Math.random() * 2 ** 31),
       existing: plan.shifts,
       fromShiftIndex: shiftIndex,
-      ...(started ? { startingCredit: s!.playedSec } : {}),
+      ...(started ? { startingCredit: outPlayed } : {}),
     })
     await savePlan(gameId, result.shifts, result.seed, kept)
   }
@@ -395,7 +410,7 @@ export default function Live() {
         seed: plan.seed,
       },
       Math.max(0, fromIdx),
-      s!.playedSec,
+      outPlayed,
       onField,
       plan.shifts,
     )
@@ -520,7 +535,7 @@ export default function Live() {
           seed: plan.seed,
         },
         Math.max(0, shiftIdx),
-        s!.playedSec,
+        outPlayed,
         field,
         plan.shifts,
       )
@@ -651,7 +666,7 @@ export default function Live() {
               squad={available}
               label={`Q${s.period + 1} lineup`}
               hint="Tap any position to change it, including the goal."
-              minutesOf={(id) => minutes(s.playedSec.get(id) ?? 0)}
+              minutesOf={(id) => minutes(outPlayed.get(id) ?? 0)}
               onPick={(slotId, playerId) =>
                 void setLineupAt(nextPeriodIdx, slotId, playerId)
               }
@@ -674,7 +689,7 @@ export default function Live() {
             />
           </>
         ) : s.status === 'final' ? (
-          <FinalSummary state={s} roster={available} target={fullShare} />
+          <FinalSummary state={s} roster={available} target={shareNow} />
         ) : (
           <>
             <Pitch
@@ -694,7 +709,7 @@ export default function Live() {
                     className={`bchip2${comingOn.has(p.id) ? ' deck' : ''}`}
                   >
                     {displayName(p, available)}
-                    <em>{comingOn.has(p.id) ? 'next on' : minutes(s.playedSec.get(p.id) ?? 0)}</em>
+                    <em>{comingOn.has(p.id) ? 'next on' : minutes(outPlayed.get(p.id) ?? 0)}</em>
                   </span>
                 ))}
                 {bench.length === 0 ? <span className="dim">Everyone is on</span> : null}
@@ -827,7 +842,7 @@ export default function Live() {
                     onClick={() => setNamePick({ kind: 'out', player: sw.off })}
                   >
                     {show(sw.off)}
-                    <em>{minutes(s.playedSec.get(sw.off) ?? 0)} played</em>
+                    <em>{minutes(outPlayed.get(sw.off) ?? 0)} on field</em>
                   </button>
                   <span className="arrow">
                     <em className={`pos ${slotGroup(sw.offSlot)}`}>
@@ -841,7 +856,7 @@ export default function Live() {
                     onClick={() => setNamePick({ kind: 'in', player: sw.on })}
                   >
                     {show(sw.on)}
-                    <em>{minutes(s.playedSec.get(sw.on) ?? 0)} played</em>
+                    <em>{minutes(outPlayed.get(sw.on) ?? 0)} on field</em>
                   </button>
                 </div>
               ))}
@@ -849,7 +864,7 @@ export default function Live() {
                 <div className="swap" key={o.playerId}>
                   <span className="side">
                     {show(o.playerId)}
-                    <em>{minutes(s.playedSec.get(o.playerId) ?? 0)} played</em>
+                    <em>{minutes(outPlayed.get(o.playerId) ?? 0)} on field</em>
                   </span>
                   <span className="arrow">
                     <em className={`pos ${slotGroup(o.slotId)}`}>
@@ -871,7 +886,7 @@ export default function Live() {
                   </span>
                   <span className="side on">
                     {show(o.playerId)}
-                    <em>{minutes(s.playedSec.get(o.playerId) ?? 0)} played</em>
+                    <em>{minutes(outPlayed.get(o.playerId) ?? 0)} on field</em>
                   </span>
                 </div>
               ))}
@@ -964,8 +979,8 @@ export default function Live() {
                       <span className="grow">
                         <span className="name">{fullName(p)}</span>
                         <span className="meta">
-                          {minutes(s.playedSec.get(p.id) ?? 0)} played
-                          {onFieldIds.has(p.id) ? ' · on the field' : ' · on the bench'}
+                          {minutes(outPlayed.get(p.id) ?? 0)} on field
+                          {onFieldIds.has(p.id) ? ' · playing' : ' · on the bench'}
                         </span>
                       </span>
                       <span className="chev" aria-hidden="true">
@@ -990,7 +1005,7 @@ export default function Live() {
             squad={available}
             label="Who is on"
             hint="Tap any position. Nothing happens until you confirm the substitution."
-            minutesOf={(id) => minutes(s.playedSec.get(id) ?? 0)}
+            minutesOf={(id) => minutes(outPlayed.get(id) ?? 0)}
             onPick={(slotId, playerId) =>
               void setLineupAt(editShiftIdx, slotId, playerId)
             }
@@ -1040,7 +1055,7 @@ export default function Live() {
               <span className="grow">
                 <span className="name">{fullName(p)}</span>
                 <span className="meta">
-                  {minutes(s.playedSec.get(p.id) ?? 0)} played
+                  {minutes(outPlayed.get(p.id) ?? 0)} on field
                   {swap
                     ? ` · now at ${
                         formation.slots.find((x) => x.id === s.slotOf.get(p.id))?.label ??
@@ -1316,6 +1331,7 @@ function FinalSummary({
   roster: Player[]
   target: Map<string, number>
 }) {
+  const out = outfieldPlayed(state)
   const sorted = [...roster].sort(
     (a, b) => (state.playedSec.get(b.id) ?? 0) - (state.playedSec.get(a.id) ?? 0),
   )
@@ -1328,19 +1344,20 @@ function FinalSummary({
       </div>
       <div className="card">
         {sorted.map((p) => {
-          const played = state.playedSec.get(p.id) ?? 0
           const gk = state.gkSec.get(p.id) ?? 0
-          const dev = played - (target.get(p.id) ?? 0)
+          const field = out.get(p.id) ?? 0
+          // Measured on field time, because that is what the team shares out.
+          // Goal duty is its own rotation, so a keeper reading "+7:00 over"
+          // would be a reproach for doing exactly what was asked of them.
+          const dev = field - (target.get(p.id) ?? 0)
           return (
             <div className="final-line" key={p.id}>
-              <span>
-                {fullName(p)}
-                {gk > 30 ? (
-                  <span className="dim"> · {minutes(gk)} in goal</span>
-                ) : null}
-              </span>
+              <span>{fullName(p)}</span>
               <b>
-                {minutes(played)}{' '}
+                {minutes(field)}
+                {gk > 30 ? (
+                  <span className="dim"> + {minutes(gk)} goal</span>
+                ) : null}{' '}
                 <span className={`deficit ${Math.abs(dev) <= 100 ? 'ok' : dev < 0 ? 'owed' : 'over'}`}>
                   {dev >= 0 ? '+' : '−'}
                   {mmss(Math.abs(dev))}

@@ -117,6 +117,56 @@ export function fairShareUpTo(
 }
 
 /**
+ * Share of *outfield* play each player should have had by `sec`.
+ *
+ * Whoever is in goal is not competing for a field position, so they neither
+ * accrue a share while they are in it nor fall behind for the time they spend
+ * there. A keeper therefore comes out of goal level with everyone else and
+ * takes an even share of what is left — which is the whole point: nothing is
+ * owed for goal duty, and nobody is held back in anticipation of it.
+ */
+export function outfieldShareUpTo(
+  rules: GameRules,
+  attendance: Attendance[],
+  keeperSpans: { playerId: ID; fromSec: number; toSec: number }[],
+  outfieldSlots: number,
+  sec: number,
+): Map<ID, number> {
+  const windows = availabilityWindows(rules, attendance)
+  const share = new Map<ID, number>()
+  for (const w of windows) share.set(w.playerId, 0)
+  if (sec <= 0 || outfieldSlots <= 0) return share
+
+  // Split at every boundary that can change the pool: someone arriving or
+  // leaving, and the goal changing hands.
+  const cuts = new Set<number>([0, sec])
+  for (const w of windows) {
+    cuts.add(w.fromSec)
+    cuts.add(w.untilSec)
+  }
+  for (const k of keeperSpans) {
+    cuts.add(k.fromSec)
+    cuts.add(k.toSec)
+  }
+  const points = [...cuts].filter((c) => c >= 0 && c <= sec).sort((a, b) => a - b)
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i]!
+    const b = points[i + 1]!
+    if (b <= a) continue
+    const mid = (a + b) / 2
+    const keeper = keeperSpans.find((k) => k.fromSec <= mid && k.toSec > mid)?.playerId
+    const pool = windows
+      .filter((w) => w.fromSec <= mid && w.untilSec > mid && w.playerId !== keeper)
+      .map((w) => w.playerId)
+    if (pool.length === 0) continue
+    const each = ((b - a) * Math.min(outfieldSlots, pool.length)) / pool.length
+    for (const id of pool) share.set(id, (share.get(id) ?? 0) + each)
+  }
+  return share
+}
+
+/**
  * Fair share broken down per shift, so the planner can ask "who is owed time
  * *by now*" rather than only at full time. Summing these gives exactly
  * `fairShareSec`, which is asserted in the tests.
