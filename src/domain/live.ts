@@ -1,6 +1,7 @@
 import type {
   Formation,
   GameEvent,
+  GameEventBody,
   GameRules,
   ID,
   PositionGroup,
@@ -424,6 +425,58 @@ export function diffToPlan(
     offOnly: free,
     onOnly: ons.slice(matched),
   }
+}
+
+export type FieldChangeKind = 'none' | 'swap' | 'sub' | 'fill'
+
+export interface FieldChange {
+  kind: FieldChangeKind
+  events: GameEventBody[]
+  nextField: Record<SlotId, ID>
+}
+
+/**
+ * Put a player into one position on the pitch, right now.
+ *
+ * Covers the three things a coach means by tapping a position: bring someone on
+ * from the bench, fill a gap, or have two players already on trade places. A
+ * trade is two MOVEs rather than a substitution, so neither child leaves the
+ * field and neither loses a second of playing time.
+ */
+export function planFieldChange(
+  onField: Record<SlotId, ID>,
+  slotId: SlotId,
+  playerId: ID,
+): FieldChange {
+  const current = onField[slotId]
+  if (current === playerId) return { kind: 'none', events: [], nextField: onField }
+
+  const fromSlot = Object.entries(onField).find(
+    ([sid, pid]) => pid === playerId && sid !== slotId,
+  )?.[0]
+
+  const nextField: Record<SlotId, ID> = { ...onField, [slotId]: playerId }
+  const events: GameEventBody[] = []
+
+  if (fromSlot) {
+    events.push({ type: 'MOVE', playerId, fromSlotId: fromSlot, toSlotId: slotId })
+    if (current) {
+      events.push({ type: 'MOVE', playerId: current, fromSlotId: slotId, toSlotId: fromSlot })
+      nextField[fromSlot] = current
+    } else {
+      delete nextField[fromSlot]
+    }
+    return { kind: 'swap', events, nextField }
+  }
+
+  if (current) {
+    events.push({ type: 'OFF', playerId: current, slotId })
+    events.push({ type: 'ON', playerId, slotId })
+    return { kind: 'sub', events, nextField }
+  }
+
+  events.push({ type: 'ON', playerId, slotId })
+  return { kind: 'fill', events, nextField }
 }
 
 export function isSubDue(sub: SubPlan): boolean {

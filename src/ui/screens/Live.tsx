@@ -19,6 +19,7 @@ import {
   deriveLive,
   diffToPlan,
   isSubDue,
+  planFieldChange,
   secondsUntilShift,
   type LiveState,
   type SubPlan,
@@ -422,19 +423,34 @@ export default function Live() {
     window.setTimeout(() => setToast(null), 2200)
   }
 
-  async function unplannedSwap(offId: string, offSlot: SlotId, onId: string) {
-    await appendMany(
-      gameId,
-      [
-        { type: 'OFF', playerId: offId, slotId: offSlot },
-        { type: 'ON', playerId: onId, slotId: offSlot },
-      ],
-      s!.cumulativeSec,
-    )
+  /**
+   * Put a player into one position on the pitch, right now.
+   *
+   * One action covers all three things tapping a position can mean: bring
+   * someone on, fill a gap, or have two players already on trade places. A
+   * trade is two MOVEs, so neither child leaves the field and neither loses a
+   * second — which is why swapping positions does not disturb the plan, while
+   * a substitution rebalances what is left.
+   */
+  async function setFieldSlot(slotId: SlotId, playerId: string) {
+    const change = planFieldChange(s!.onField, slotId, playerId)
+    if (change.kind === 'none') {
+      setSlotSheet(null)
+      return
+    }
+
+    await appendMany(gameId, change.events, s!.cumulativeSec)
     setSlotSheet(null)
-    const nextField = { ...s!.onField, [offSlot]: onId }
-    await replanRemainder(Math.max(0, shiftIdx), nextField)
-    setToast('Plan adjusted')
+
+    if (change.kind === 'swap' && slotId !== gkSlotId) {
+      // Nobody came off, so nobody is owed anything different.
+      setToast('Positions swapped')
+      window.setTimeout(() => setToast(null), 2200)
+      return
+    }
+
+    await replanRemainder(Math.max(0, shiftIdx), change.nextField)
+    setToast(slotId === gkSlotId ? `${show(playerId)} in goal` : 'Plan adjusted')
     window.setTimeout(() => setToast(null), 2200)
   }
 
@@ -506,53 +522,6 @@ export default function Live() {
     setToast(arriving ? 'Added to the game' : 'Plan adjusted')
     window.setTimeout(() => setToast(null), 2200)
   }
-
-  /**
-   * Change the goalkeeper by hand.
-   *
-   * Substitutions during play never touch the goal, so this and the period
-   * break are the only ways the gloves move. The new keeper can come off the
-   * bench, or trade places with someone already on the field — the latter
-   * keeps the team at full strength, which matters mid-period.
-   */
-  async function changeKeeper(newId: string) {
-    if (!gkSlotId) return
-    const cur = s!.onField[gkSlotId]
-    if (!cur || cur === newId) return
-
-    const tradeSlot = Object.entries(s!.onField).find(
-      ([sid, pid]) => pid === newId && sid !== gkSlotId,
-    )?.[0]
-
-    const bodies: GameEventBody[] = tradeSlot
-      ? [
-          { type: 'MOVE', playerId: newId, fromSlotId: tradeSlot, toSlotId: gkSlotId },
-          { type: 'MOVE', playerId: cur, fromSlotId: gkSlotId, toSlotId: tradeSlot },
-        ]
-      : [
-          { type: 'OFF', playerId: cur, slotId: gkSlotId },
-          { type: 'ON', playerId: newId, slotId: gkSlotId },
-        ]
-
-    await appendMany(gameId, bodies, s!.cumulativeSec)
-    setSlotSheet(null)
-
-    const nextField: Record<SlotId, string> = { ...s!.onField, [gkSlotId]: newId }
-    if (tradeSlot) nextField[tradeSlot] = cur
-    await replanRemainder(Math.max(0, shiftIdx), nextField)
-    setToast(`${show(newId)} in goal`)
-    window.setTimeout(() => setToast(null), 2200)
-  }
-
-  /** Fill an empty position — after an injury, or when a late arrival turns up. */
-  async function bringOn(slotId: SlotId, playerId: string) {
-    await appendMany(gameId, [{ type: 'ON', playerId, slotId }], s!.cumulativeSec)
-    setSlotSheet(null)
-    await replanRemainder(Math.max(0, shiftIdx), { ...s!.onField, [slotId]: playerId })
-    setToast('Plan adjusted')
-    window.setTimeout(() => setToast(null), 2200)
-  }
-
   async function logGoal(playerId: string | null, assistId: string | null) {
     const body: GameEventBody = { type: 'GOAL' }
     if (playerId) body.playerId = playerId
@@ -967,66 +936,79 @@ export default function Live() {
           const label =
             formation.slots.find((x) => x.id === slotSheet.slotId)?.label ?? 'Position'
           const isGoal = slotSheet.slotId === gkSlotId
+          const here = slotSheet.playerId
 
-          // Anyone who will go in goal, on the field or off it. A player already
-          // on trades places with the keeper rather than replacing them, so the
-          // team does not drop to ten to change the gloves.
-          const keeperChoices = available.filter(
-            (p) => p.gk !== 'never' && p.id !== slotSheet.playerId,
+          // Only players who will go in goal are offered the gloves, unless
+          // nobody on this roster will, in which case the choice has to be made
+          // from whoever is there.
+          const eligible = isGoal
+            ? available.some((p) => p.gk !== 'never')
+              ? available.filter((p) => p.gk !== 'never')
+              : available
+            : available
+
+          const comeOn = eligible
+            .filter((p) => !onFieldIds.has(p.id))
+            .sort((a, b) => owedSec(b.id) - owedSec(a.id))
+          const trade = eligible
+            .filter((p) => onFieldIds.has(p.id) && p.id !== here)
+            .sort((a, b) => a.firstName.localeCompare(b.firstName))
+
+          const row = (p: Player, swap: boolean) => (
+            <button
+              key={p.id}
+              type="button"
+              className="row"
+              onClick={() => void setFieldSlot(slotSheet.slotId, p.id)}
+            >
+              <span className="grow">
+                <span className="name">{fullName(p)}</span>
+                <span className="meta">
+                  {minutes(s.playedSec.get(p.id) ?? 0)} played
+                  {swap
+                    ? ` · now at ${
+                        formation.slots.find((x) => x.id === s.slotOf.get(p.id))?.label ??
+                        'on'
+                      }`
+                    : ` · owed ${mmss(Math.max(0, owedSec(p.id)))}`}
+                </span>
+              </span>
+              <span className="chev" aria-hidden="true">
+                &rsaquo;
+              </span>
+            </button>
           )
-          const choices = isGoal
-            ? keeperChoices.length > 0
-              ? keeperChoices
-              : available.filter((p) => p.id !== slotSheet.playerId)
-            : bench
-
-          const title = isGoal
-            ? 'Who goes in goal?'
-            : slotSheet.playerId
-              ? `Sub off ${show(slotSheet.playerId)}`
-              : `Who goes in at ${label}?`
 
           return (
-            <Sheet title={title} onClose={() => setSlotSheet(null)}>
-              <div className="dim" style={{ marginBottom: '0.6rem' }}>
-                {isGoal
-                  ? keeperChoices.length > 0
-                    ? 'Someone already on will trade places.'
-                    : 'Nobody here has said they will keep goal.'
-                  : 'Most owed first.'}
+            <Sheet
+              title={isGoal ? 'Who goes in goal?' : `Who plays ${label}?`}
+              onClose={() => setSlotSheet(null)}
+            >
+              {here ? (
+                <div className="dim" style={{ marginBottom: '0.6rem' }}>
+                  {show(here)} is there now.
+                </div>
+              ) : null}
+
+              <div className="section-label" style={{ marginTop: 0 }}>
+                Bring on
               </div>
               <div className="card">
-                {choices.map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    className="row"
-                    onClick={() => {
-                      if (isGoal) void changeKeeper(p.id)
-                      else if (slotSheet.playerId)
-                        void unplannedSwap(slotSheet.playerId, slotSheet.slotId, p.id)
-                      else void bringOn(slotSheet.slotId, p.id)
-                    }}
-                  >
-                    <span className="grow">
-                      <span className="name">{fullName(p)}</span>
-                      <span className="meta">
-                        {minutes(s.playedSec.get(p.id) ?? 0)} played
-                        {isGoal
-                          ? onFieldIds.has(p.id)
-                            ? ' · on the field'
-                            : ' · on the bench'
-                          : ` · owed ${mmss(Math.max(0, owedSec(p.id)))}`}
-                      </span>
-                    </span>
-                    <span className="chev" aria-hidden="true">
-                      &rsaquo;
-                    </span>
-                  </button>
-                ))}
-                {choices.length === 0 ? (
-                  <div className="pad dim">Nobody available.</div>
+                {comeOn.map((p) => row(p, false))}
+                {comeOn.length === 0 ? (
+                  <div className="pad dim">Nobody is on the bench.</div>
                 ) : null}
+              </div>
+
+              <div className="section-label">Swap positions with</div>
+              <div className="card">
+                {trade.map((p) => row(p, true))}
+                {trade.length === 0 ? (
+                  <div className="pad dim">Nobody else is on the field.</div>
+                ) : null}
+              </div>
+              <div className="dim" style={{ marginTop: '0.6rem' }}>
+                Swapping positions keeps both on the field. Nobody loses a minute.
               </div>
             </Sheet>
           )

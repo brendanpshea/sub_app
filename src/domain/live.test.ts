@@ -4,6 +4,7 @@ import {
   deriveLive,
   diffToPlan,
   isSubDue,
+  planFieldChange,
   secondsUntilShift,
 } from './live'
 import { BUILT_IN_FORMATIONS } from './formations'
@@ -366,6 +367,76 @@ describe('diffToPlan', () => {
   it('handles going a player short', () => {
     const sub = diffToPlan({ lb: 'a', cm: 'b' }, { lb: 'a' })
     expect(sub.offOnly).toEqual([{ playerId: 'b', slotId: 'cm' }])
+  })
+})
+
+describe('planFieldChange', () => {
+  const FIELD = { gk: 'zoe', lb: 'a', rb: 'b', lm: 'c', cm: 'd', rm: 'e', st: 'f' }
+
+  it('trades places when both players are already on', () => {
+    // The case that had no answer before: two outfielders switching positions.
+    const c = planFieldChange(FIELD, 'cm', 'a')
+    expect(c.kind).toBe('swap')
+    expect(c.events).toEqual([
+      { type: 'MOVE', playerId: 'a', fromSlotId: 'lb', toSlotId: 'cm' },
+      { type: 'MOVE', playerId: 'd', fromSlotId: 'cm', toSlotId: 'lb' },
+    ])
+    expect(c.nextField['cm']).toBe('a')
+    expect(c.nextField['lb']).toBe('d')
+  })
+
+  it('keeps the same eleven on the field after a trade', () => {
+    const c = planFieldChange(FIELD, 'cm', 'a')
+    expect(new Set(Object.values(c.nextField))).toEqual(
+      new Set(Object.values(FIELD)),
+    )
+    expect(Object.keys(c.nextField).sort()).toEqual(Object.keys(FIELD).sort())
+  })
+
+  it('never emits OFF for a trade, so nobody loses a minute', () => {
+    const c = planFieldChange(FIELD, 'cm', 'a')
+    expect(c.events.some((e) => e.type === 'OFF')).toBe(false)
+    expect(c.events.some((e) => e.type === 'ON')).toBe(false)
+  })
+
+  it('substitutes when the incoming player is on the bench', () => {
+    const c = planFieldChange(FIELD, 'st', 'sub1')
+    expect(c.kind).toBe('sub')
+    expect(c.events).toEqual([
+      { type: 'OFF', playerId: 'f', slotId: 'st' },
+      { type: 'ON', playerId: 'sub1', slotId: 'st' },
+    ])
+    expect(c.nextField['st']).toBe('sub1')
+  })
+
+  it('fills an empty position without taking anyone off', () => {
+    const short = { ...FIELD }
+    delete (short as Record<string, string>)['st']
+    const c = planFieldChange(short, 'st', 'sub1')
+    expect(c.kind).toBe('fill')
+    expect(c.events).toEqual([{ type: 'ON', playerId: 'sub1', slotId: 'st' }])
+  })
+
+  it('moves a player into a gap rather than duplicating them', () => {
+    const short = { ...FIELD }
+    delete (short as Record<string, string>)['st']
+    const c = planFieldChange(short, 'st', 'a')
+    expect(c.kind).toBe('swap')
+    expect(c.nextField['st']).toBe('a')
+    expect(c.nextField['lb']).toBeUndefined()
+  })
+
+  it('does nothing when the player is already there', () => {
+    const c = planFieldChange(FIELD, 'cm', 'd')
+    expect(c.kind).toBe('none')
+    expect(c.events).toHaveLength(0)
+  })
+
+  it('can put an outfielder in goal, sending the keeper out to their shirt', () => {
+    const c = planFieldChange(FIELD, 'gk', 'b')
+    expect(c.kind).toBe('swap')
+    expect(c.nextField['gk']).toBe('b')
+    expect(c.nextField['rb']).toBe('zoe')
   })
 })
 
