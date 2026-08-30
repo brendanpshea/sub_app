@@ -105,6 +105,29 @@ describe('clock', () => {
     expect(s.status).toBe('final')
   })
 
+  it('never advances the period on its own', () => {
+    // Soccer periods do not end on a timer. A ten-minute quarter that has run
+    // for twelve is still the first quarter, still running, until a human says
+    // otherwise.
+    const s = derive(log([0, { type: 'PERIOD_START', period: 1 }]), 720)
+    expect(s.period).toBe(1)
+    expect(s.status).toBe('running')
+    expect(s.periodElapsedSec).toBeCloseTo(720, 6)
+  })
+
+  it('keeps counting past the nominal period length', () => {
+    const s = derive(
+      log(
+        [0, { type: 'PERIOD_START', period: 1 }],
+        [660, { type: 'PERIOD_END', period: 1 }],
+      ),
+      700,
+    )
+    // Eleven minutes actually played in a ten-minute quarter, and all of it counts.
+    expect(s.cumulativeSec).toBeCloseTo(660, 6)
+    expect(s.status).toBe('break')
+  })
+
   it('applies a clock correction without losing time already played', () => {
     // "We started 45 seconds late."
     const s = derive(

@@ -386,11 +386,14 @@ export default function Live() {
 
   const alert = (() => {
     if (s.status === 'pre') return null
-    if (s.status === 'paused')
-      return { cls: 'paused', text: 'Paused — tap play to resume' }
     if (s.status === 'break' || s.status === 'final') return null
+    // Ending the period outranks the paused notice: pausing at the whistle and
+    // then wanting to end the quarter is the normal half-time sequence, and the
+    // header's play button already says the clock is stopped.
     if (s.periodElapsedSec >= periodSec)
       return { cls: 'period', text: `End of Q${s.period} — tap to end`, action: endPeriod }
+    if (s.status === 'paused')
+      return { cls: 'paused', text: 'Paused — tap play to resume' }
     if (showSubSheet) return { cls: 'due', text: 'Sub when play stops' }
     if (untilNext <= ON_DECK_LEAD_SEC)
       return { cls: 'soon', text: `Next sub in ${mmss(Math.max(0, untilNext))}` }
@@ -708,7 +711,7 @@ export default function Live() {
                 setMenu(false)
                 setScoring('goal')
               }}
-              disabled={s.status !== 'running'}
+              disabled={s.status !== 'running' && s.status !== 'paused'}
             >
               <span className="grow">
                 <span className="name">Goal for us</span>
@@ -728,10 +731,13 @@ export default function Live() {
                 <span className="meta">Cancels the last sub or goal</span>
               </span>
             </button>
-            {s.status === 'running' ? (
+            {s.status === 'running' || s.status === 'paused' ? (
               <button type="button" className="row" onClick={() => void endPeriod()}>
                 <span className="grow">
                   <span className="name">End Q{s.period}</span>
+                  <span className="meta">
+                    Whenever the referee blows — early or late
+                  </span>
                 </span>
               </button>
             ) : null}
