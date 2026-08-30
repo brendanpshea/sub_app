@@ -320,6 +320,19 @@ describe('replanFrom', () => {
     expect(p1Shifts).toBeLessThan(p2Shifts)
   })
 
+  it('does not change the keeper halfway through a quarter', () => {
+    // Re-planning from the middle of Q1 must leave Q1's keeper alone — swapping
+    // them at the 3-minute mark is unfair to the child in goal and baffling to
+    // everyone watching.
+    const roster = squad(10)
+    const base = generatePlan(input(roster))
+    const startingKeeper = base.shifts[0]!.assignments['gk']
+
+    const result = replanFrom(input(roster), 1, new Map(), {}, base.shifts)
+    const q1 = result.shifts.filter((s) => s.period === 1)
+    for (const s of q1) expect(s.assignments['gk']).toBe(startingKeeper)
+  })
+
   it('does not count the first half twice', () => {
     // The bug this guards: replayed shifts adding their planned minutes on top
     // of the real minutes already supplied, so everyone looks over-played and

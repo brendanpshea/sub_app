@@ -1089,6 +1089,22 @@ table.plan .qsep {
   margin-top: 0.6rem;
 }
 
+.lineup-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  margin-bottom: 0.6rem;
+}
+
+.lineup-head > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.lineup-head .field-label {
+  margin-bottom: 0.1rem;
+}
+
 .bench-row {
   display: flex;
   align-items: center;

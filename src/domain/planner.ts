@@ -309,7 +309,15 @@ function assignKeepers(a: KeeperArgs): void {
       (p) => p.slotId === a.gkSlotDef.id && indices.includes(p.shiftIndex),
     )
 
-    let chosen: ID | undefined = pinned?.playerId
+    // If part of this block has already been played or fixed, the keeper for it
+    // is settled. A re-plan that swapped keepers halfway through a quarter would
+    // be both unfair to the child in goal and baffling to everyone watching.
+    const carried = indices
+      .filter((i) => i < a.from)
+      .map((i) => a.shifts[i]?.assignments[a.gkSlotDef.id])
+      .find((x): x is ID => !!x)
+
+    let chosen: ID | undefined = pinned?.playerId ?? carried
 
     if (!chosen) {
       const willing = a.roster.filter(

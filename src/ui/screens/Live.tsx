@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, rosterOf } from '@/db/db'
@@ -22,8 +22,8 @@ import {
   secondsUntilShift,
   type LiveState,
 } from '@/domain/live'
-import { replanFrom } from '@/domain/planner'
-import type { Formation, GameEventBody, Player, SlotId } from '@/domain/types'
+import { generatePlan, replanFrom } from '@/domain/planner'
+import type { Formation, GameEventBody, Pin, Player, SlotId } from '@/domain/types'
 import { displayName, fullName } from '@/domain/types'
 import Pitch, { type SlotFill } from '../components/Pitch'
 import Sheet from '../components/Sheet'
@@ -48,13 +48,16 @@ export default function Live() {
     () => db.formations.where('teamId').equals(teamId).toArray(),
     [teamId],
   )
-  const plan = useLiveQuery(() => loadPlan(gameId), [gameId])
+  const plan = useLiveQuery(async () => (await loadPlan(gameId)) ?? null, [gameId])
   const events = useLiveQuery(() => eventsOf(gameId), [gameId])
 
   const [menu, setMenu] = useState(false)
   const [scoring, setScoring] = useState<null | 'goal' | 'assist'>(null)
   const [scorer, setScorer] = useState<string | null>(null)
-  const [pullOff, setPullOff] = useState<{ playerId: string; slotId: SlotId } | null>(null)
+  const [slotSheet, setSlotSheet] = useState<{
+    slotId: SlotId
+    playerId?: string
+  } | null>(null)
   const [snoozeUntilSec, setSnoozeUntilSec] = useState(0)
   const [toast, setToast] = useState<string | null>(null)
 
@@ -80,6 +83,24 @@ export default function Live() {
     [game, events, formation, now],
   )
   useWakeLock(s?.running ?? false)
+
+  // A coach who opens match day should find a lineup waiting, not an empty
+  // pitch and a decision. Generated once, and freely shuffled or edited after.
+  const [autoBuilt, setAutoBuilt] = useState(false)
+  useEffect(() => {
+    if (autoBuilt || !game || plan !== null) return
+    if (available.length < game.rules.playersOnField) return
+    setAutoBuilt(true)
+    const result = generatePlan({
+      rules: game.rules,
+      formation,
+      roster: available,
+      attendance,
+      pairings: pairings ?? [],
+      seed: Math.floor(Math.random() * 2 ** 31),
+    })
+    void savePlan(gameId, result.shifts, result.seed, [])
+  }, [autoBuilt, game, plan, available, attendance, pairings, formation, gameId])
 
   if (!game || !roster || !s) return <div className="live" />
 
@@ -136,6 +157,79 @@ export default function Live() {
       ? Object.values(nextShift.assignments).filter((id) => !onFieldIds.has(id))
       : [],
   )
+
+  // ---------------------------------------------------------------- lineup
+
+  const startAssign: Record<SlotId, string> = plan?.shifts[0]?.assignments ?? {}
+  const starters = new Set(Object.values(startAssign))
+  const lineupBench = available
+    .filter((p) => !starters.has(p.id))
+    .sort((a, b) => a.firstName.localeCompare(b.firstName))
+
+  /**
+   * Change one starting position before kick-off.
+   *
+   * The edited cell is pinned and the rest of the game is re-planned around it,
+   * so choosing a starter never quietly costs anyone their share of the game.
+   */
+  async function setStarter(slotId: SlotId, playerId: string) {
+    if (!plan || !game) return
+    const shifts = plan.shifts.map((sh) => ({
+      ...sh,
+      assignments: { ...sh.assignments },
+    }))
+    const first = shifts[0]
+    if (!first) return
+
+    const displaced = first.assignments[slotId]
+    const elsewhere = Object.entries(first.assignments).find(
+      ([sid, pid]) => pid === playerId && sid !== slotId,
+    )
+    first.assignments[slotId] = playerId
+    if (elsewhere) {
+      // Straight swap, so no position is left empty at kick-off.
+      const [otherSlot] = elsewhere
+      if (displaced) first.assignments[otherSlot] = displaced
+      else delete first.assignments[otherSlot]
+    }
+
+    const pins: Pin[] = [
+      ...plan.pins.filter((p) => p.shiftIndex !== 0),
+      { shiftIndex: 0, slotId, playerId },
+      ...(elsewhere && displaced
+        ? [{ shiftIndex: 0, slotId: elsewhere[0], playerId: displaced }]
+        : []),
+    ]
+
+    const result = generatePlan({
+      rules: game.rules,
+      formation,
+      roster: available,
+      attendance,
+      pairings: pairings ?? [],
+      pins,
+      seed: plan.seed,
+      existing: shifts,
+      fromShiftIndex: 1,
+    })
+    await savePlan(gameId, result.shifts, result.seed, pins)
+    setSlotSheet(null)
+  }
+
+  /** A fresh chart, and with it a fresh starting lineup. */
+  async function shuffleLineup() {
+    if (!game) return
+    const result = generatePlan({
+      rules: game.rules,
+      formation,
+      roster: available,
+      attendance,
+      pairings: pairings ?? [],
+      pins: (plan?.pins ?? []).filter((p) => p.shiftIndex !== 0),
+      seed: Math.floor(Math.random() * 2 ** 31),
+    })
+    await savePlan(gameId, result.shifts, result.seed, [])
+  }
 
   // ---------------------------------------------------------------- actions
 
@@ -245,9 +339,18 @@ export default function Live() {
       ],
       s!.cumulativeSec,
     )
-    setPullOff(null)
+    setSlotSheet(null)
     const nextField = { ...s!.onField, [offSlot]: onId }
     await replanRemainder(Math.max(0, shiftIdx), nextField)
+    setToast('Plan adjusted')
+    window.setTimeout(() => setToast(null), 2200)
+  }
+
+  /** Fill an empty position — after an injury, or when a late arrival turns up. */
+  async function bringOn(slotId: SlotId, playerId: string) {
+    await appendMany(gameId, [{ type: 'ON', playerId, slotId }], s!.cumulativeSec)
+    setSlotSheet(null)
+    await replanRemainder(Math.max(0, shiftIdx), { ...s!.onField, [slotId]: playerId })
     setToast('Plan adjusted')
     window.setTimeout(() => setToast(null), 2200)
   }
@@ -273,6 +376,12 @@ export default function Live() {
       share: target > 0 ? (s.playedSec.get(playerId) ?? 0) / target : 0,
       tone: toneFor(playerId),
     }
+  }
+
+  const lineupFill: Partial<Record<SlotId, SlotFill>> = {}
+  for (const [slotId, playerId] of Object.entries(startAssign)) {
+    const p = byId.get(playerId)
+    if (p) lineupFill[slotId] = { name: displayName(p, available) }
   }
 
   const alert = (() => {
@@ -320,17 +429,56 @@ export default function Live() {
 
       <div className="live-body">
         {s.status === 'pre' ? (
-          <div className="empty">
-            <strong>Ready when you are</strong>
-            {plan
-              ? 'The starting seven go on as soon as you kick off.'
-              : 'No shift chart yet — build one first, or start and sub by hand.'}
-            <div className="btn-row" style={{ marginTop: '1.4rem' }}>
-              <button type="button" className="btn primary" onClick={() => void startPeriod(1)}>
-                Kick off Q1
-              </button>
+          available.length < rules.playersOnField ? (
+            <div className="empty">
+              <strong>Not enough players</strong>
+              {available.length} available, {rules.playersOnField} needed. Set
+              attendance first.
             </div>
-          </div>
+          ) : (
+            <>
+              <div className="lineup-head">
+                <div>
+                  <div className="field-label">Starting {rules.playersOnField}</div>
+                  <div className="dim">Tap a position to change it.</div>
+                </div>
+                <button type="button" className="btn" onClick={() => void shuffleLineup()}>
+                  ↻ Shuffle
+                </button>
+              </div>
+
+              <Pitch
+                formation={formation}
+                fill={lineupFill}
+                onSlotClick={(slot) =>
+                  setSlotSheet({ slotId: slot.id, playerId: startAssign[slot.id] })
+                }
+              />
+
+              <div className="bench-strip">
+                <div className="bench-row">
+                  <span className="lab">Bench</span>
+                  {lineupBench.map((p) => (
+                    <span key={p.id} className="bchip2">
+                      {displayName(p, available)}
+                    </span>
+                  ))}
+                  {lineupBench.length === 0 ? (
+                    <span className="dim">Everyone starts</span>
+                  ) : null}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="cta-big"
+                disabled={Object.keys(startAssign).length < rules.playersOnField}
+                onClick={() => void startPeriod(1)}
+              >
+                KICK OFF
+              </button>
+            </>
+          )
         ) : s.status === 'break' ? (
           <div className="empty">
             <strong>End of Q{s.period}</strong>
@@ -352,10 +500,9 @@ export default function Live() {
             <Pitch
               formation={formation}
               fill={fill}
-              onSlotClick={(slot) => {
-                const playerId = s.onField[slot.id]
-                if (playerId) setPullOff({ playerId, slotId: slot.id })
-              }}
+              onSlotClick={(slot) =>
+                setSlotSheet({ slotId: slot.id, playerId: s.onField[slot.id] })
+              }
             />
 
             <div className="bench-strip">
@@ -446,39 +593,56 @@ export default function Live() {
         </Sheet>
       ) : null}
 
-      {pullOff ? (
-        <Sheet
-          title={`Sub off ${show(pullOff.playerId)}`}
-          onClose={() => setPullOff(null)}
-        >
-          <div className="dim" style={{ marginBottom: '0.6rem' }}>
-            Most owed first.
-          </div>
-          <div className="card">
-            {bench.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                className="row"
-                onClick={() => void unplannedSwap(pullOff.playerId, pullOff.slotId, p.id)}
-              >
-                <span className="grow">
-                  <span className="name">{fullName(p)}</span>
-                  <span className="meta">
-                    {minutes(s.playedSec.get(p.id) ?? 0)} played · owed{' '}
-                    {mmss(Math.max(0, owedSec(p.id)))}
-                  </span>
-                </span>
-                <span className="chev" aria-hidden="true">
-                  ›
-                </span>
-              </button>
-            ))}
-            {bench.length === 0 ? (
-              <div className="pad dim">Nobody is on the bench.</div>
-            ) : null}
-          </div>
-        </Sheet>
+      {slotSheet ? (
+        (() => {
+          const label =
+            formation.slots.find((x) => x.id === slotSheet.slotId)?.label ?? 'Position'
+          const pre = s.status === 'pre'
+          const choices = pre ? lineupBench : bench
+          const title = pre
+            ? `Who starts at ${label}?`
+            : slotSheet.playerId
+              ? `Sub off ${show(slotSheet.playerId)}`
+              : `Who goes in at ${label}?`
+          return (
+            <Sheet title={title} onClose={() => setSlotSheet(null)}>
+              <div className="dim" style={{ marginBottom: '0.6rem' }}>
+                {pre ? 'Anyone on the bench.' : 'Most owed first.'}
+              </div>
+              <div className="card">
+                {choices.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className="row"
+                    onClick={() => {
+                      if (pre) void setStarter(slotSheet.slotId, p.id)
+                      else if (slotSheet.playerId)
+                        void unplannedSwap(slotSheet.playerId, slotSheet.slotId, p.id)
+                      else void bringOn(slotSheet.slotId, p.id)
+                    }}
+                  >
+                    <span className="grow">
+                      <span className="name">{fullName(p)}</span>
+                      {pre ? null : (
+                        <span className="meta">
+                          {minutes(s.playedSec.get(p.id) ?? 0)} played · owed{' '}
+                          {mmss(Math.max(0, owedSec(p.id)))}
+                        </span>
+                      )}
+                    </span>
+                    <span className="chev" aria-hidden="true">
+                      ›
+                    </span>
+                  </button>
+                ))}
+                {choices.length === 0 ? (
+                  <div className="pad dim">Nobody is on the bench.</div>
+                ) : null}
+              </div>
+            </Sheet>
+          )
+        })()
       ) : null}
 
       {scoring === 'goal' ? (
