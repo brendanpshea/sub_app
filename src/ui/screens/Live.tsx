@@ -1,0 +1,652 @@
+import { useMemo, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import { useLiveQuery } from 'dexie-react-hooks'
+import { db } from '@/db/db'
+import { updateGame } from '@/db/games'
+import { appendMany, eventsOf, undoLastGroup } from '@/db/events'
+import { loadPlan, savePlan } from '@/db/plans'
+import { reconcileAttendance } from '@/domain/attendance'
+import { BUILT_IN_FORMATIONS, findFormation } from '@/domain/formations'
+import {
+  buildShiftGrid,
+  fairShareSec,
+  fairShareUpTo,
+  minutes,
+  mmss,
+} from '@/domain/fairness'
+import {
+  currentShiftIndex,
+  deriveLive,
+  diffToPlan,
+  isSubDue,
+  secondsUntilShift,
+  type LiveState,
+} from '@/domain/live'
+import { replanFrom } from '@/domain/planner'
+import type {
+  Formation,
+  GameEventBody,
+  Player,
+  SlotId,
+} from '@/domain/types'
+import Pitch, { type SlotFill } from '../components/Pitch'
+import Sheet from '../components/Sheet'
+import { useNow, useWakeLock } from '../hooks/useLive'
+
+const ON_DECK_LEAD_SEC = 60
+
+export default function Live() {
+  const { teamId = '', gameId = '' } = useParams()
+  const nav = useNavigate()
+
+  const game = useLiveQuery(() => db.games.get(gameId), [gameId])
+  const roster = useLiveQuery(
+    () => db.players.where('teamId').equals(teamId).sortBy('name'),
+    [teamId],
+  )
+  const pairings = useLiveQuery(
+    () => db.pairings.where('teamId').equals(teamId).toArray(),
+    [teamId],
+  )
+  const custom = useLiveQuery(
+    () => db.formations.where('teamId').equals(teamId).toArray(),
+    [teamId],
+  )
+  const plan = useLiveQuery(() => loadPlan(gameId), [gameId])
+  const events = useLiveQuery(() => eventsOf(gameId), [gameId])
+
+  const [menu, setMenu] = useState(false)
+  const [scoring, setScoring] = useState<null | 'goal' | 'assist'>(null)
+  const [scorer, setScorer] = useState<string | null>(null)
+  const [pullOff, setPullOff] = useState<{ playerId: string; slotId: SlotId } | null>(null)
+  const [snoozeUntilSec, setSnoozeUntilSec] = useState(0)
+  const [toast, setToast] = useState<string | null>(null)
+
+  const formation: Formation =
+    findFormation(custom, game?.formationId ?? '') ?? BUILT_IN_FORMATIONS[0]!
+
+  const attendance = useMemo(
+    () => (game && roster ? reconcileAttendance(game.attendance, roster) : []),
+    [game, roster],
+  )
+  const available = useMemo(() => {
+    const ok = new Set(
+      attendance.filter((a) => a.status !== 'absent').map((a) => a.playerId),
+    )
+    return (roster ?? []).filter((p) => ok.has(p.id))
+  }, [attendance, roster])
+
+  // Ticks only to force a re-render; the clock itself comes from timestamps,
+  // so a missed tick costs nothing and a locked phone catches up on wake.
+  const now = useNow(true)
+  const s: LiveState | null = useMemo(
+    () => (game ? deriveLive(events ?? [], game.rules, formation, now) : null),
+    [game, events, formation, now],
+  )
+  useWakeLock(s?.running ?? false)
+
+  if (!game || !roster || !s) return <div className="live" />
+
+  const rules = game.rules
+  const grid = buildShiftGrid(rules)
+  const periodSec = rules.periodMinutes * 60
+  const byId = new Map(roster.map((p) => [p.id, p]))
+
+  const shiftIdx =
+    s.period > 0 ? currentShiftIndex(grid, rules, s.period, s.periodElapsedSec) : -1
+  const currentShift = shiftIdx >= 0 ? plan?.shifts[shiftIdx] : undefined
+  const nextShift = shiftIdx >= 0 ? plan?.shifts[shiftIdx + 1] : undefined
+
+  const sub = diffToPlan(s.onField, currentShift?.assignments ?? {})
+  const due = s.status === 'running' && isSubDue(sub) && !!currentShift
+  const showSubSheet = due && s.cumulativeSec >= snoozeUntilSec
+
+  const untilNext = nextShift
+    ? secondsUntilShift(nextShift, rules, s.periodElapsedSec)
+    : periodSec - s.periodElapsedSec
+
+  const lateBy = currentShift
+    ? s.periodElapsedSec - (currentShift.startSec - (s.period - 1) * periodSec)
+    : 0
+
+  // Fair share, both for the whole game and for right now.
+  const fullShare = fairShareSec(rules, attendance)
+  const shareNow = fairShareUpTo(rules, attendance, s.cumulativeSec)
+
+  function toneFor(playerId: string): 'ok' | 'behind' | 'short' {
+    const played = s!.playedSec.get(playerId) ?? 0
+    const owed = (shareNow.get(playerId) ?? 0) - played
+    if (owed > 180) return 'short'
+    if (owed > 60) return 'behind'
+    return 'ok'
+  }
+
+  function owedSec(playerId: string): number {
+    return (shareNow.get(playerId) ?? 0) - (s!.playedSec.get(playerId) ?? 0)
+  }
+
+  const onFieldIds = new Set(Object.values(s.onField))
+  const bench = available
+    .filter((p) => !onFieldIds.has(p.id))
+    .sort((a, b) => owedSec(b.id) - owedSec(a.id))
+
+  const onDeck = new Set(
+    untilNext <= ON_DECK_LEAD_SEC && nextShift
+      ? Object.values(nextShift.assignments).filter((id) => !onFieldIds.has(id))
+      : [],
+  )
+
+  // ---------------------------------------------------------------- actions
+
+  async function startPeriod(period: number) {
+    const bodies: GameEventBody[] = [{ type: 'PERIOD_START', period }]
+    if (period === 1) {
+      const first = plan?.shifts[0]?.assignments ?? {}
+      for (const [slotId, playerId] of Object.entries(first)) {
+        bodies.push({ type: 'ON', playerId, slotId })
+      }
+    }
+    await appendMany(gameId, bodies, s!.cumulativeSec)
+    if (game!.status !== 'live') await updateGame(gameId, { status: 'live' })
+  }
+
+  async function endPeriod() {
+    await appendMany(gameId, [{ type: 'PERIOD_END', period: s!.period }], s!.cumulativeSec)
+    setMenu(false)
+    if (s!.period >= rules.periodCount) {
+      await updateGame(gameId, { status: 'final' })
+    }
+  }
+
+  async function togglePause() {
+    await appendMany(
+      gameId,
+      [{ type: s!.running ? 'CLOCK_PAUSE' : 'CLOCK_RESUME' }],
+      s!.cumulativeSec,
+    )
+  }
+
+  /** Make the plan match reality from this shift onward. */
+  async function replanRemainder(fromIdx: number, onField: Record<SlotId, string>) {
+    if (!plan || !game) return
+    const result = replanFrom(
+      {
+        rules: game.rules,
+        formation,
+        roster: available,
+        attendance,
+        pairings: pairings ?? [],
+        pins: plan.pins,
+        seed: plan.seed,
+      },
+      Math.max(0, fromIdx),
+      s!.playedSec,
+      onField,
+      plan.shifts,
+    )
+    await savePlan(
+      gameId,
+      result.shifts,
+      result.seed,
+      plan.pins.filter((p) => p.shiftIndex > fromIdx),
+    )
+  }
+
+  async function confirmSub() {
+    const offs: GameEventBody[] = []
+    const moves: GameEventBody[] = []
+    const ons: GameEventBody[] = []
+
+    for (const sw of sub.swaps) {
+      offs.push({ type: 'OFF', playerId: sw.off, slotId: sw.offSlot })
+      ons.push({ type: 'ON', playerId: sw.on, slotId: sw.onSlot })
+    }
+    for (const o of sub.offOnly) {
+      offs.push({ type: 'OFF', playerId: o.playerId, slotId: o.slotId })
+    }
+    for (const o of sub.onOnly) {
+      ons.push({ type: 'ON', playerId: o.playerId, slotId: o.slotId })
+    }
+    for (const m of sub.moves) {
+      moves.push({
+        type: 'MOVE',
+        playerId: m.playerId,
+        fromSlotId: m.fromSlotId,
+        toSlotId: m.toSlotId,
+      })
+    }
+
+    // Off first so slots are free, then moves, then on.
+    await appendMany(gameId, [...offs, ...moves, ...ons], s!.cumulativeSec)
+
+    // The referee decides when play stops, so a late sub is normal. Past a
+    // minute the remainder is quietly rebalanced rather than left to drift.
+    if (Math.abs(lateBy) > 60) {
+      await replanRemainder(shiftIdx + 1, currentShift?.assignments ?? {})
+      setToast('Plan adjusted')
+      window.setTimeout(() => setToast(null), 2200)
+    }
+  }
+
+  /** Accept the field as it stands and rebalance what is left. */
+  async function skipSub() {
+    await replanRemainder(shiftIdx, s!.onField)
+    setToast('Plan adjusted')
+    window.setTimeout(() => setToast(null), 2200)
+  }
+
+  async function unplannedSwap(offId: string, offSlot: SlotId, onId: string) {
+    await appendMany(
+      gameId,
+      [
+        { type: 'OFF', playerId: offId, slotId: offSlot },
+        { type: 'ON', playerId: onId, slotId: offSlot },
+      ],
+      s!.cumulativeSec,
+    )
+    setPullOff(null)
+    const nextField = { ...s!.onField, [offSlot]: onId }
+    await replanRemainder(Math.max(0, shiftIdx), nextField)
+    setToast('Plan adjusted')
+    window.setTimeout(() => setToast(null), 2200)
+  }
+
+  async function logGoal(playerId: string | null, assistId: string | null) {
+    const body: GameEventBody = { type: 'GOAL' }
+    if (playerId) body.playerId = playerId
+    if (assistId) body.assistId = assistId
+    await appendMany(gameId, [body], s!.cumulativeSec)
+    setScoring(null)
+    setScorer(null)
+  }
+
+  // ---------------------------------------------------------------- render
+
+  const fill: Partial<Record<SlotId, SlotFill>> = {}
+  for (const [slotId, playerId] of Object.entries(s.onField)) {
+    const p = byId.get(playerId)
+    if (!p) continue
+    const target = fullShare.get(playerId) ?? 1
+    fill[slotId] = {
+      name: p.name,
+      share: target > 0 ? (s.playedSec.get(playerId) ?? 0) / target : 0,
+      tone: toneFor(playerId),
+    }
+  }
+
+  const alert = (() => {
+    if (s.status === 'pre') return null
+    if (s.status === 'paused')
+      return { cls: 'paused', text: 'Paused — tap play to resume' }
+    if (s.status === 'break' || s.status === 'final') return null
+    if (s.periodElapsedSec >= periodSec)
+      return { cls: 'period', text: `End of Q${s.period} — tap to end`, action: endPeriod }
+    if (showSubSheet) return { cls: 'due', text: 'Sub when play stops' }
+    if (untilNext <= ON_DECK_LEAD_SEC)
+      return { cls: 'soon', text: `Next sub in ${mmss(Math.max(0, untilNext))}` }
+    return { cls: '', text: `Next sub in ${mmss(Math.max(0, untilNext))}` }
+  })()
+
+  return (
+    <div className="live">
+      <header className="live-head">
+        <button type="button" aria-label="Back" onClick={() => nav(`/team/${teamId}/game/${gameId}`)}>
+          ‹
+        </button>
+        <span className="per">{s.period > 0 ? `Q${s.period}` : '—'}</span>
+        <span className="clk">{mmss(s.periodElapsedSec)}</span>
+        {s.status === 'running' || s.status === 'paused' ? (
+          <button type="button" aria-label={s.running ? 'Pause' : 'Resume'} onClick={() => void togglePause()}>
+            {s.running ? '❚❚' : '▶'}
+          </button>
+        ) : null}
+        <button type="button" aria-label="More" onClick={() => setMenu(true)}>
+          ⋯
+        </button>
+      </header>
+
+      {alert ? (
+        alert.action ? (
+          <button type="button" className={`live-alert ${alert.cls}`} onClick={() => void alert.action!()}>
+            {alert.text}
+          </button>
+        ) : (
+          <div className={`live-alert ${alert.cls}`}>{alert.text}</div>
+        )
+      ) : null}
+
+      {toast ? <div className="live-alert soon">{toast}</div> : null}
+
+      <div className="live-body">
+        {s.status === 'pre' ? (
+          <div className="empty">
+            <strong>Ready when you are</strong>
+            {plan
+              ? 'The starting seven go on as soon as you kick off.'
+              : 'No shift chart yet — build one first, or start and sub by hand.'}
+            <div className="btn-row" style={{ marginTop: '1.4rem' }}>
+              <button type="button" className="btn primary" onClick={() => void startPeriod(1)}>
+                Kick off Q1
+              </button>
+            </div>
+          </div>
+        ) : s.status === 'break' ? (
+          <div className="empty">
+            <strong>End of Q{s.period}</strong>
+            {minutes(s.cumulativeSec)} played.
+            <div className="btn-row" style={{ marginTop: '1.4rem' }}>
+              <button
+                type="button"
+                className="btn primary"
+                onClick={() => void startPeriod(s.period + 1)}
+              >
+                Start Q{s.period + 1}
+              </button>
+            </div>
+          </div>
+        ) : s.status === 'final' ? (
+          <FinalSummary state={s} roster={available} target={fullShare} />
+        ) : (
+          <>
+            <Pitch
+              formation={formation}
+              fill={fill}
+              onSlotClick={(slot) => {
+                const playerId = s.onField[slot.id]
+                if (playerId) setPullOff({ playerId, slotId: slot.id })
+              }}
+            />
+
+            <div className="bench-strip">
+              {onDeck.size > 0 ? (
+                <div className="bench-row">
+                  <span className="lab">On deck</span>
+                  {[...onDeck].map((id) => (
+                    <span key={id} className="bchip2 deck">
+                      {byId.get(id)?.name ?? '?'}
+                      <em>{minutes(s.playedSec.get(id) ?? 0)}</em>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <div className="bench-row">
+                <span className="lab">Bench</span>
+                {bench.map((p) => (
+                  <span key={p.id} className="bchip2">
+                    {p.name}
+                    <em>{minutes(s.playedSec.get(p.id) ?? 0)}</em>
+                  </span>
+                ))}
+                {bench.length === 0 ? <span className="dim">Everyone is on</span> : null}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* ---------------------------------------------------------- sheets */}
+
+      {showSubSheet ? (
+        <Sheet title="Substitution" onClose={() => setSnoozeUntilSec(s.cumulativeSec + 60)}>
+          <div className="subhead">
+            <div className="when">
+              Planned {mmss(Math.max(0, (currentShift?.startSec ?? 0) - (s.period - 1) * periodSec))}
+            </div>
+            {lateBy > 5 ? <div className="late">+{mmss(lateBy)} late</div> : null}
+          </div>
+
+          {sub.swaps.map((sw) => (
+            <div className="swap" key={`${sw.off}-${sw.on}`}>
+              <span className="side">
+                {byId.get(sw.off)?.name ?? '?'}
+                <em>{minutes(s.playedSec.get(sw.off) ?? 0)} played</em>
+              </span>
+              <span className="arrow" aria-hidden="true">
+                →
+              </span>
+              <span className="side on">
+                {byId.get(sw.on)?.name ?? '?'}
+                <em>owed {mmss(Math.max(0, owedSec(sw.on)))}</em>
+              </span>
+            </div>
+          ))}
+          {sub.offOnly.map((o) => (
+            <div className="swap" key={o.playerId}>
+              <span className="side">{byId.get(o.playerId)?.name ?? '?'}</span>
+              <span className="arrow">→</span>
+              <span className="side">bench</span>
+            </div>
+          ))}
+          {sub.onOnly.map((o) => (
+            <div className="swap" key={o.playerId}>
+              <span className="side">bench</span>
+              <span className="arrow">→</span>
+              <span className="side on">{byId.get(o.playerId)?.name ?? '?'}</span>
+            </div>
+          ))}
+          {sub.moves.length > 0 ? (
+            <div className="dim" style={{ textAlign: 'center', marginTop: '0.4rem' }}>
+              Also moving:{' '}
+              {sub.moves.map((m) => byId.get(m.playerId)?.name ?? '?').join(', ')}
+            </div>
+          ) : null}
+
+          <button type="button" className="cta-big" onClick={() => void confirmSub()}>
+            ✓ CONFIRM
+          </button>
+          <div className="subacts">
+            <button type="button" onClick={() => void skipSub()}>
+              Skip
+            </button>
+            <button type="button" onClick={() => setSnoozeUntilSec(s.cumulativeSec + 60)}>
+              Delay 1:00
+            </button>
+          </div>
+        </Sheet>
+      ) : null}
+
+      {pullOff ? (
+        <Sheet
+          title={`Sub off ${byId.get(pullOff.playerId)?.name ?? ''}`}
+          onClose={() => setPullOff(null)}
+        >
+          <div className="dim" style={{ marginBottom: '0.6rem' }}>
+            Whoever is owed the most time is first.
+          </div>
+          <div className="card">
+            {bench.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className="row"
+                onClick={() => void unplannedSwap(pullOff.playerId, pullOff.slotId, p.id)}
+              >
+                <span className="grow">
+                  <span className="name">{p.name}</span>
+                  <span className="meta">
+                    {minutes(s.playedSec.get(p.id) ?? 0)} played · owed{' '}
+                    {mmss(Math.max(0, owedSec(p.id)))}
+                  </span>
+                </span>
+                <span className="chev" aria-hidden="true">
+                  ›
+                </span>
+              </button>
+            ))}
+            {bench.length === 0 ? (
+              <div className="pad dim">Nobody is on the bench.</div>
+            ) : null}
+          </div>
+        </Sheet>
+      ) : null}
+
+      {scoring === 'goal' ? (
+        <Sheet title="Who scored?" onClose={() => setScoring(null)}>
+          <div className="card">
+            {Object.values(s.onField).map((id) => (
+              <button
+                key={id}
+                type="button"
+                className="row"
+                onClick={() => {
+                  setScorer(id)
+                  setScoring('assist')
+                }}
+              >
+                <span className="grow">
+                  <span className="name">{byId.get(id)?.name ?? '?'}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+          <div className="btn-row">
+            <button type="button" className="btn" onClick={() => void logGoal(null, null)}>
+              Not sure
+            </button>
+          </div>
+        </Sheet>
+      ) : null}
+
+      {scoring === 'assist' ? (
+        <Sheet title="Assisted by?" onClose={() => void logGoal(scorer, null)}>
+          <div className="card">
+            {Object.values(s.onField)
+              .filter((id) => id !== scorer)
+              .map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  className="row"
+                  onClick={() => void logGoal(scorer, id)}
+                >
+                  <span className="grow">
+                    <span className="name">{byId.get(id)?.name ?? '?'}</span>
+                  </span>
+                </button>
+              ))}
+          </div>
+          <div className="btn-row">
+            <button type="button" className="btn" onClick={() => void logGoal(scorer, null)}>
+              No assist
+            </button>
+          </div>
+        </Sheet>
+      ) : null}
+
+      {menu ? (
+        <Sheet title="Game" onClose={() => setMenu(false)}>
+          <div className="card">
+            <button
+              type="button"
+              className="row"
+              onClick={() => {
+                setMenu(false)
+                setScoring('goal')
+              }}
+              disabled={s.status !== 'running'}
+            >
+              <span className="grow">
+                <span className="name">Goal for us</span>
+                <span className="meta">{s.goalCount} so far</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="row"
+              onClick={() => {
+                void undoLastGroup(gameId)
+                setMenu(false)
+              }}
+            >
+              <span className="grow">
+                <span className="name">Undo last action</span>
+                <span className="meta">Nothing is ever deleted, only cancelled</span>
+              </span>
+            </button>
+            {s.status === 'running' ? (
+              <button type="button" className="row" onClick={() => void endPeriod()}>
+                <span className="grow">
+                  <span className="name">End Q{s.period}</span>
+                </span>
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="row"
+              onClick={() => {
+                void appendMany(
+                  gameId,
+                  [{ type: 'CLOCK_ADJUST', deltaSec: 30, reason: 'manual' }],
+                  s.cumulativeSec,
+                )
+              }}
+            >
+              <span className="grow">
+                <span className="name">Clock is 30s fast</span>
+                <span className="meta">Add half a minute to the game clock</span>
+              </span>
+            </button>
+          </div>
+          <div className="btn-row">
+            <button
+              type="button"
+              className="btn"
+              onClick={() => nav(`/team/${teamId}/game/${gameId}/plan`)}
+            >
+              See the shift chart
+            </button>
+          </div>
+        </Sheet>
+      ) : null}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------- final
+
+function FinalSummary({
+  state,
+  roster,
+  target,
+}: {
+  state: LiveState
+  roster: Player[]
+  target: Map<string, number>
+}) {
+  const sorted = [...roster].sort(
+    (a, b) => (state.playedSec.get(b.id) ?? 0) - (state.playedSec.get(a.id) ?? 0),
+  )
+  return (
+    <>
+      <div className="empty" style={{ paddingBottom: '1rem' }}>
+        <strong>Full time</strong>
+        {state.goalCount} {state.goalCount === 1 ? 'goal' : 'goals'} ·{' '}
+        {minutes(state.cumulativeSec)} played
+      </div>
+      <div className="card">
+        {sorted.map((p) => {
+          const played = state.playedSec.get(p.id) ?? 0
+          const gk = state.gkSec.get(p.id) ?? 0
+          const dev = played - (target.get(p.id) ?? 0)
+          return (
+            <div className="final-line" key={p.id}>
+              <span>
+                {p.name}
+                {gk > 30 ? (
+                  <span className="dim"> · {minutes(gk)} in goal</span>
+                ) : null}
+              </span>
+              <b>
+                {minutes(played)}{' '}
+                <span className={`deficit ${Math.abs(dev) <= 100 ? 'ok' : dev < 0 ? 'owed' : 'over'}`}>
+                  {dev >= 0 ? '+' : '−'}
+                  {mmss(Math.abs(dev))}
+                </span>
+              </b>
+            </div>
+          )
+        })}
+      </div>
+    </>
+  )
+}

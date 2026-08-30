@@ -86,7 +86,13 @@ export default function Games() {
         ) : (
           <div className="card">
             {sorted.map((g) => (
-              <Link key={g.id} className="row" to={`/team/${teamId}/game/${g.id}`}>
+              <Link
+                key={g.id}
+                className="row"
+                // A game in progress goes straight to the pitch — on match day
+                // nobody wants to tap through a settings screen first.
+                to={`/team/${teamId}/game/${g.id}${g.status === 'live' ? '/live' : ''}`}
+              >
                 <span className="grow">
                   <span className="name">
                     {g.homeAway === 'home' ? 'v' : 'at'} {g.opponent}

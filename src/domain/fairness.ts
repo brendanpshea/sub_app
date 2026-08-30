@@ -90,6 +90,33 @@ export function fairShareSec(rules: GameRules, attendance: Attendance[]): Map<ID
 }
 
 /**
+ * Fair share for a game that ended at `sec`.
+ *
+ * Live mode needs "what should this player have by now" to colour the minutes
+ * bar. Prorating the full-game figure would be wrong for anyone whose window
+ * is not the whole game, so the integral is simply truncated instead.
+ */
+export function fairShareUpTo(
+  rules: GameRules,
+  attendance: Attendance[],
+  sec: number,
+): Map<ID, number> {
+  const windows = availabilityWindows(rules, attendance)
+  const share = new Map<ID, number>()
+  for (const w of windows) share.set(w.playerId, 0)
+
+  for (const iv of availabilityIntervals(rules, windows)) {
+    const b = Math.min(iv.endSec, sec)
+    if (b <= iv.startSec) continue
+    const n = iv.available.length
+    if (n === 0) continue
+    const each = ((b - iv.startSec) * Math.min(rules.playersOnField, n)) / n
+    for (const id of iv.available) share.set(id, (share.get(id) ?? 0) + each)
+  }
+  return share
+}
+
+/**
  * Fair share broken down per shift, so the planner can ask "who is owed time
  * *by now*" rather than only at full time. Summing these gives exactly
  * `fairShareSec`, which is asserted in the tests.

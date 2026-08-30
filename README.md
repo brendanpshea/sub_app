@@ -69,11 +69,13 @@ src/
     fairness.ts     fair share, shift grid, formatting
     attendance.ts   status/window invariants, roster reconciliation
     planner.ts      three-pass shift chart generator + re-planning
-  db/         Dexie schema, CRUD, JSON export/import
+    live.ts         clock, minutes and stats derived from the event log
+  db/         Dexie schema, CRUD, event log, JSON export/import
   ui/
+    hooks/          useNow, useWakeLock
     components/     AppBar, Pitch, Sheet
     screens/        Teams, TeamDetail, Roster, FormationPicker,
-                    Games, GameSetup, PlanGrid, Backup
+                    Games, GameSetup, PlanGrid, Live, Backup
 ```
 
 ## The planner
@@ -103,14 +105,32 @@ constraint quietly lose a vote stops trusting the planner. Avoiders are now
 only considered when nobody else can take the slot, which is what "relaxes when
 the pool empties" should have meant.
 
+## Live mode
+
+The sub sheet is open exactly when the field does not match the plan for the
+current shift. Nothing else tracks whether a substitution is outstanding.
+
+That one rule does a surprising amount of work. **Confirm** makes the field
+match the plan. **Skip** makes the plan match the field. An unplanned
+substitution for an injury re-plans the remainder, which makes the plan match
+the field again. In every case the sheet closes because the condition that
+opened it is gone, and the plan and reality are never allowed to drift apart
+silently.
+
+Shift boundaries are period-relative, not cumulative: a referee who plays two
+extra minutes in the first quarter must not push every later shift out of
+alignment with the quarter it belongs to.
+
 Keep `domain/` free of React. The planner and the derivations are pure functions
 over plain data — and they are the parts where a bug quietly costs a child
 playing time.
 
 ## Status
 
-Built: data layer, roster with constraints, formation presets, games and
-attendance with live fair-share preview, the planner, the plan grid with
-pinning and re-roll, backup and restore.
+Built: the whole match-day path. Team, roster with constraints, formation
+presets, games and attendance, the planner, the plan grid with pinning and
+re-roll, live mode with the clock, substitutions, self-healing re-plans and
+basic stats, backup and restore.
 
-Next: live mode — the clock, the sub sheet, and self-healing re-plans.
+Next: the season ledger and the post-game share card, then PNG icons so it
+installs properly on a phone.

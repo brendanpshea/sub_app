@@ -5,8 +5,10 @@ export interface SlotFill {
   name: string
   /** Optional small line under the name. */
   note?: string
-  /** 0..1 share of fair share met, drives the hairline under the name. */
+  /** 0..1 of the full-game fair share played so far. Drives the hairline. */
   share?: number
+  /** Whether that share is on track right now. */
+  tone?: 'ok' | 'behind' | 'short'
 }
 
 interface Props {
@@ -42,8 +44,16 @@ export default function Pitch({ formation, fill, onSlotClick, alwaysLabel }: Pro
             {f ? (
               <>
                 {alwaysLabel ? <span className="lab">{s.label}</span> : null}
-                {f.name}
+                <span className="nm">{f.name}</span>
                 {f.note ? <span className="lab">{f.note}</span> : null}
+                {f.share !== undefined ? (
+                  <span className="bar">
+                    <i
+                      className={f.tone ?? 'ok'}
+                      style={{ width: `${Math.min(100, Math.max(0, f.share * 100))}%` }}
+                    />
+                  </span>
+                ) : null}
               </>
             ) : (
               s.label

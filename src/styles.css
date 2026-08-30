@@ -939,3 +939,304 @@ table.plan .qsep {
 .deficit.ok {
   color: var(--ok);
 }
+
+/* ---------------------------------------------------------------- live */
+
+.live {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.live-head {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: max(0.45rem, env(safe-area-inset-top)) 0.6rem 0.45rem;
+  background: var(--brand);
+  color: var(--on-brand);
+}
+
+.live-head .per {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+}
+
+.live-head .clk {
+  flex: 1;
+  font-size: 1.9rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.live-head button {
+  background: rgba(255, 255, 255, 0.15);
+  color: inherit;
+  border: 0;
+  border-radius: 9px;
+  min-width: 46px;
+  height: 40px;
+  font-size: 1.05rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.live-head button:active {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.live-alert {
+  display: block;
+  width: 100%;
+  border: 0;
+  padding: 0.5rem 0.6rem;
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-align: center;
+  background: var(--surface-2);
+  color: var(--ink-3);
+}
+
+.live-alert.soon {
+  background: #d5a544;
+  color: #2a2005;
+}
+
+.live-alert.due {
+  background: var(--accent);
+  color: #fff;
+}
+
+.live-alert.period {
+  background: var(--brand);
+  color: var(--on-brand);
+  cursor: pointer;
+}
+
+.live-alert.paused {
+  background: var(--surface-3);
+  color: var(--ink-2);
+}
+
+.live-body {
+  flex: 1;
+  padding: 0.6rem;
+}
+
+/* Player chips carry a hairline showing minutes against fair share, so
+   equity reads at a glance without a single number on screen. */
+.slot .bar {
+  display: block;
+  height: 3px;
+  margin-top: 0.22rem;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.slot .bar i {
+  display: block;
+  height: 100%;
+  background: var(--ok);
+}
+
+.slot .bar i.behind {
+  background: var(--warn);
+}
+
+.slot .bar i.short {
+  background: var(--crit);
+}
+
+.slot .nm {
+  display: block;
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.bench-strip {
+  margin-top: 0.6rem;
+}
+
+.bench-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.4rem;
+}
+
+.bench-row .lab {
+  flex: 0 0 auto;
+  width: 54px;
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.bchip2 {
+  min-height: 42px;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--rule-2);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: center;
+}
+
+.bchip2 em {
+  display: block;
+  font-style: normal;
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.bchip2.deck {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.bchip2.deck em {
+  color: var(--accent);
+  opacity: 0.8;
+}
+
+/* ---------------------------------------------------------------- sub sheet */
+
+.subhead {
+  text-align: center;
+  margin-bottom: 0.8rem;
+}
+
+.subhead .when {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.subhead .late {
+  font-size: 1rem;
+  font-weight: 800;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.swap {
+  display: grid;
+  grid-template-columns: 1fr 1.4rem 1fr;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.45rem;
+}
+
+.swap .side {
+  min-height: 54px;
+  padding: 0.35rem 0.4rem;
+  border-radius: 9px;
+  border: 1px solid var(--rule-2);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 700;
+  text-align: center;
+  cursor: pointer;
+}
+
+.swap .side.on {
+  background: var(--brand-soft);
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.swap .side em {
+  display: block;
+  font-style: normal;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+.swap .arrow {
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 0.95rem;
+}
+
+.cta-big {
+  display: block;
+  width: 100%;
+  min-height: 64px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #fff;
+  font-family: inherit;
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  margin-top: 0.8rem;
+}
+
+.cta-big:active {
+  filter: brightness(0.92);
+}
+
+.subacts {
+  display: flex;
+  justify-content: center;
+  gap: 1.6rem;
+  margin-top: 0.7rem;
+}
+
+.subacts button {
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--ink-3);
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.final-line {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.5rem 0.9rem;
+  border-bottom: 1px solid var(--rule);
+  font-size: 0.92rem;
+}
+
+.final-line:last-child {
+  border-bottom: 0;
+}
+
+.final-line b {
+  font-variant-numeric: tabular-nums;
+}

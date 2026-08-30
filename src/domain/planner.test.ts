@@ -283,26 +283,59 @@ describe('replanFrom', () => {
   it('holds the players who are on the pitch right now', () => {
     const roster = squad(10)
     const base = generatePlan(input(roster))
-    const atSec = 500 // inside shift index 2
-    const idx = GRID.findIndex((s) => s.endSec > atSec)
+    const idx = 2
     const current = base.shifts[idx]!.assignments
 
-    const result = replanFrom(input(roster), atSec, new Map(), { ...current })
+    const result = replanFrom(
+      input(roster),
+      idx,
+      new Map(),
+      { ...current },
+      base.shifts,
+    )
     expect(result.shifts[idx]!.assignments).toEqual(current)
+  })
+
+  it('leaves the shifts already played untouched', () => {
+    const roster = squad(10)
+    const base = generatePlan(input(roster))
+    const idx = 6
+    const result = replanFrom(input(roster), idx, new Map(), {}, base.shifts)
+    for (let i = 0; i < idx; i++) {
+      expect(result.shifts[i]!.assignments).toEqual(base.shifts[i]!.assignments)
+    }
   })
 
   it('rebalances the remainder against minutes actually played', () => {
     const roster = squad(10)
-    // p1 has been left on for the whole first half by accident.
+    const base = generatePlan(input(roster))
+    // p1 was left on for the whole first half by accident.
     const actual = new Map<string, number>([['p1', 1200]])
-    const atSec = 1200
-    const idx = GRID.findIndex((s) => s.endSec > atSec)
-    const result = replanFrom(input(roster), atSec, actual, {})
+    const idx = 6 // start of the second half
+    const result = replanFrom(input(roster), idx, actual, {}, base.shifts)
 
-    // The remaining shifts should now favour everyone except p1.
     const remaining = result.shifts.slice(idx)
     const p1Shifts = remaining.filter((s) => onField(s).includes('p1')).length
     const p2Shifts = remaining.filter((s) => onField(s).includes('p2')).length
     expect(p1Shifts).toBeLessThan(p2Shifts)
+  })
+
+  it('does not count the first half twice', () => {
+    // The bug this guards: replayed shifts adding their planned minutes on top
+    // of the real minutes already supplied, so everyone looks over-played and
+    // the second half is planned against nonsense.
+    const roster = squad(10)
+    const base = generatePlan(input(roster))
+    const idx = 6
+    const played = new Map<string, number>()
+    for (const p of roster) played.set(p.id, 840) // everyone even at halftime
+
+    const result = replanFrom(input(roster), idx, played, {}, base.shifts)
+    const second = result.shifts.slice(idx)
+    const counts = roster.map(
+      (p) => second.filter((s) => onField(s).includes(p.id)).length,
+    )
+    // Even credit in means an even split of what is left.
+    expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1)
   })
 })

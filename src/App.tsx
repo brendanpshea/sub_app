@@ -6,6 +6,7 @@ import FormationPicker from './ui/screens/FormationPicker'
 import Games from './ui/screens/Games'
 import GameSetup from './ui/screens/GameSetup'
 import PlanGrid from './ui/screens/PlanGrid'
+import Live from './ui/screens/Live'
 import Backup from './ui/screens/Backup'
 
 export default function App() {
@@ -20,6 +21,7 @@ export default function App() {
         <Route path="/team/:teamId/games" element={<Games />} />
         <Route path="/team/:teamId/game/:gameId" element={<GameSetup />} />
         <Route path="/team/:teamId/game/:gameId/plan" element={<PlanGrid />} />
+        <Route path="/team/:teamId/game/:gameId/live" element={<Live />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </div>

@@ -165,8 +165,20 @@ export function generatePlan(input: PlannerInput): PlanResult {
     for (const [id, sec] of inc) target.set(id, (target.get(id) ?? 0) + sec)
 
     if (i < from) {
-      // Replayed shift: credit it, but do not re-decide it.
-      applyShiftAccounting(shift, formation, duration, credit, consecutive, groupSec, roster)
+      // Replayed shift: not re-decided. Its minutes are only added when no
+      // real credit was supplied — during a mid-game re-plan `startingCredit`
+      // already holds what was actually played, and adding the planned
+      // minutes on top would count the first half of the game twice.
+      applyShiftAccounting(
+        shift,
+        formation,
+        duration,
+        credit,
+        consecutive,
+        groupSec,
+        roster,
+        input.startingCredit === undefined,
+      )
       continue
     }
 
@@ -234,7 +246,16 @@ export function generatePlan(input: PlannerInput): PlanResult {
       shift.assignments[slot.id] = best.id
     }
 
-    applyShiftAccounting(shift, formation, duration, credit, consecutive, groupSec, roster)
+    applyShiftAccounting(
+      shift,
+      formation,
+      duration,
+      credit,
+      consecutive,
+      groupSec,
+      roster,
+      true,
+    )
   }
 
   // ---- pass 3: repair --------------------------------------------------
@@ -538,13 +559,14 @@ function applyShiftAccounting(
   consecutive: Map<ID, number>,
   groupSec: Map<ID, Record<PositionGroup, number>>,
   roster: Player[],
+  countCredit: boolean,
 ): void {
   const onField = new Set<ID>()
   for (const slot of formation.slots) {
     const pid = shift.assignments[slot.id]
     if (!pid) continue
     onField.add(pid)
-    credit.set(pid, (credit.get(pid) ?? 0) + duration)
+    if (countCredit) credit.set(pid, (credit.get(pid) ?? 0) + duration)
     const rec = groupSec.get(pid)
     if (rec) rec[slot.group] += duration
   }
@@ -630,17 +652,14 @@ function dedupe(xs: string[]): string[] {
  */
 export function replanFrom(
   input: PlannerInput,
-  atSec: number,
+  fromShiftIndex: number,
   actualCredit: Map<ID, number>,
   currentOnField: Record<SlotId, ID>,
+  existing: PlannedShift[],
 ): PlanResult {
-  const grid = buildShiftGrid(input.rules)
-  const currentIndex = grid.findIndex((s) => s.endSec > atSec)
-  const from = currentIndex < 0 ? grid.length : currentIndex
-
   // Hold the players who are on the pitch right now; only the future is negotiable.
   const holdPins: Pin[] = Object.entries(currentOnField).map(([slotId, playerId]) => ({
-    shiftIndex: from,
+    shiftIndex: fromShiftIndex,
     slotId,
     playerId,
   }))
@@ -648,7 +667,11 @@ export function replanFrom(
   return generatePlan({
     ...input,
     startingCredit: actualCredit,
-    pins: [...(input.pins ?? []).filter((p) => p.shiftIndex > from), ...holdPins],
-    fromShiftIndex: from,
+    existing,
+    pins: [
+      ...(input.pins ?? []).filter((p) => p.shiftIndex > fromShiftIndex),
+      ...holdPins,
+    ],
+    fromShiftIndex,
   })
 }
