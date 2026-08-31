@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, rosterOf } from '@/db/db'
-import { updateGame } from '@/db/games'
+import { deleteGame, updateGame } from '@/db/games'
 import { eventsOf, reopenGame } from '@/db/events'
 import { reconcileAttendance } from '@/domain/attendance'
 import { BUILT_IN_FORMATIONS, findFormation } from '@/domain/formations'
@@ -84,6 +84,25 @@ export default function Recap() {
     nav(`/team/${teamId}/game/${gameId}/live`)
   }
 
+  /**
+   * A played game holds the only record of who played how long, so this asks
+   * in terms of what it destroys rather than which row is disappearing.
+   */
+  async function remove() {
+    const parts = [`${minutes(s!.cumulativeSec)} of playing time`]
+    if (s!.goalCount > 0) {
+      parts.push(`${s!.goalCount} ${s!.goalCount === 1 ? 'goal' : 'goals'}`)
+    }
+    const warn = [
+      `Delete the game against ${game!.opponent}?`,
+      '',
+      `This permanently removes ${parts.join(' and ')}. It cannot be undone.`,
+    ].join('\n')
+    if (!confirm(warn)) return
+    await deleteGame(gameId)
+    nav(`/team/${teamId}/games`, { replace: true })
+  }
+
   return (
     <>
       <AppBar
@@ -150,6 +169,12 @@ export default function Recap() {
             </button>
           </div>
         ) : null}
+
+        <div className="btn-row" style={{ marginTop: '0.6rem' }}>
+          <button type="button" className="btn danger" onClick={() => void remove()}>
+            Delete game
+          </button>
+        </div>
       </main>
     </>
   )
