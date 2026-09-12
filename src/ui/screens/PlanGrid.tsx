@@ -28,6 +28,7 @@ export default function PlanGrid() {
   const { teamId = '', gameId = '' } = useParams()
 
   const game = useLiveQuery(() => db.games.get(gameId), [gameId])
+  const team = useLiveQuery(() => db.teams.get(teamId), [teamId])
   const roster = useLiveQuery(
     () => rosterOf(teamId),
     [teamId],
@@ -177,9 +178,14 @@ export default function PlanGrid() {
         back={`/team/${teamId}/game/${gameId}`}
         action={
           plan ? (
-            <button type="button" disabled={busy} onClick={() => void build()}>
-              ↻ Re-roll
-            </button>
+            <>
+              <button type="button" onClick={() => window.print()} aria-label="Print">
+                Print
+              </button>
+              <button type="button" disabled={busy} onClick={() => void build()}>
+                ↻ Re-roll
+              </button>
+            </>
           ) : undefined
         }
       />
@@ -188,6 +194,30 @@ export default function PlanGrid() {
           <div className="error">
             Only {available.length} players are marked available, and{' '}
             {game.rules.playersOnField} are needed on the field. Set attendance first.
+          </div>
+        ) : null}
+
+        {plan ? (
+          <div className="printonly print-head">
+            <h1>
+              {team?.name ?? 'Team'} — {game.homeAway === 'home' ? 'v' : 'at'}{' '}
+              {game.opponent}
+            </h1>
+            <p>
+              {new Date(game.kickoffAt).toLocaleString(undefined, {
+                weekday: 'long',
+                day: 'numeric',
+                month: 'long',
+                hour: 'numeric',
+                minute: '2-digit',
+              })}
+              {' · '}
+              {game.rules.periodCount} × {game.rules.periodMinutes} min
+              {' · '}
+              {formation.name}
+              {' · sub every '}
+              {game.rules.shiftMinutes} min
+            </p>
           </div>
         ) : null}
 
@@ -298,7 +328,7 @@ export default function PlanGrid() {
             </div>
 
             <div className="section-label">Balance</div>
-            <div className="card pad">
+            <div className="card pad noprint">
               <input
                 className="slider"
                 type="range"

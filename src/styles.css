@@ -1436,3 +1436,124 @@ button.side:active {
 .final-line b {
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------------------------------------------------------------- print */
+
+/* Shown only on paper: a heading the screen does not need, because on screen
+   the app bar already says which game this is. */
+.printonly {
+  display: none;
+}
+
+@media print {
+  /* Paper has no dark mode and no scrolling. Force the light palette so a
+     phone set to dark does not print a black page. */
+  :root {
+    --paper: #fff;
+    --surface: #fff;
+    --surface-2: #fff;
+    --surface-3: #eee;
+    --ink: #000;
+    --ink-2: #222;
+    --ink-3: #444;
+    --rule: #bbb;
+    --rule-2: #888;
+    color-scheme: light;
+  }
+
+  body {
+    background: #fff;
+    color: #000;
+  }
+
+  .app {
+    max-width: none;
+  }
+
+  /* Controls, navigation and anything tappable are noise on paper. */
+  .bar,
+  .noprint,
+  .btn,
+  .btn-row,
+  .section-label,
+  .slider,
+  .slider-ends,
+  .chips,
+  .error,
+  .empty {
+    display: none !important;
+  }
+
+  .printonly {
+    display: block;
+  }
+
+  main {
+    padding: 0;
+  }
+
+  .print-head h1 {
+    font-size: 16pt;
+    margin: 0 0 2pt;
+  }
+
+  .print-head p {
+    margin: 0 0 10pt;
+    font-size: 10pt;
+    color: #333;
+  }
+
+  /* The chart is the point. Let it use the whole sheet and never clip. */
+  .gridwrap {
+    overflow: visible !important;
+    border: 0;
+    border-radius: 0;
+  }
+
+  table.plan {
+    width: 100%;
+    border-spacing: 1px;
+    font-size: 9pt;
+  }
+
+  table.plan th.nm,
+  table.plan td.nm {
+    position: static;
+    min-width: 0;
+    max-width: none;
+    font-size: 10pt;
+  }
+
+  .cel {
+    width: auto;
+    min-width: 26px;
+    height: 22px;
+    line-height: 22px;
+    font-size: 8pt;
+    /* Backgrounds are the only thing distinguishing a line, so insist. */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .cel.bench {
+    background: #fff;
+    border: 1px solid #ccc;
+  }
+
+  .legend {
+    margin-top: 8pt;
+    font-size: 9pt;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* One sheet if it can manage it, and never a row split across a page. */
+  tr,
+  .final-line {
+    break-inside: avoid;
+  }
+
+  @page {
+    margin: 12mm;
+  }
+}

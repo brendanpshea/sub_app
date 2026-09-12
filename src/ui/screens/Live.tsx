@@ -25,7 +25,7 @@ import {
   type LiveState,
   type SubPlan,
 } from '@/domain/live'
-import { generatePlan, replanFrom } from '@/domain/planner'
+import { generatePlan, goalIsOrdinaryPosition, replanFrom } from '@/domain/planner'
 import type { Formation, GameEventBody, Pin, Player, SlotId } from '@/domain/types'
 import { displayName, fullName } from '@/domain/types'
 import Pitch, { type SlotFill } from '../components/Pitch'
@@ -148,9 +148,14 @@ export default function Live() {
     slots: formation.slots,
     avoids: new Map(roster.map((p) => [p.id, p.avoidGroups])),
   }
-  // During play the goal is left alone: a keeper change is made by tapping the
-  // keeper, or at a period break, never proposed at a stoppage.
-  const subOpts = { ...lineupOpts, ignoreKeeper: true }
+  /**
+   * A keeper held for a whole period is only changed by tapping them or at a
+   * break — doing it at a throw-in is fiddly and leaves the goal briefly
+   * unguarded. Set to rotate every shift, the goal is an ordinary position and
+   * changes with everything else.
+   */
+  const goalOrdinary = goalIsOrdinaryPosition(rules)
+  const subOpts = goalOrdinary ? lineupOpts : { ...lineupOpts, ignoreKeeper: true }
 
   const sub = diffToPlan(s.onField, currentShift?.assignments ?? {}, subOpts)
   const due = s.status === 'running' && isSubDue(sub) && !!currentShift
@@ -192,12 +197,15 @@ export default function Live() {
    * keeper as over-played the moment they left the goal and quietly push them
    * to the back of the queue for the rest of the game.
    */
-  const outPlayed = outfieldPlayed(s)
+  const outPlayed = goalOrdinary ? s.playedSec : outfieldPlayed(s)
   const shareNow = outfieldShareUpTo(
     rules,
     attendance,
-    s.keeperSpans,
-    formation.slots.filter((sl) => sl.requiredRole !== 'GK').length,
+    // With no keeper held out, every position is shared by everyone.
+    goalOrdinary ? [] : s.keeperSpans,
+    goalOrdinary
+      ? formation.slots.length
+      : formation.slots.filter((sl) => sl.requiredRole !== 'GK').length,
     s.cumulativeSec,
   )
 
@@ -206,9 +214,9 @@ export default function Live() {
   }
 
   function toneFor(playerId: string): 'ok' | 'behind' | 'short' {
-    // A keeper is exactly where they should be, so the figure on their chip is
-    // never a reproach.
-    if (playerId === s!.onField[gkSlotId ?? '']) return 'ok'
+    // A keeper serving a block is exactly where they should be, so the figure
+    // on their chip is never a reproach. An ordinary keeper is judged normally.
+    if (!goalOrdinary && playerId === s!.onField[gkSlotId ?? '']) return 'ok'
     const owed = owedSec(playerId)
     if (owed > 180) return 'short'
     if (owed > 60) return 'behind'
@@ -749,7 +757,12 @@ export default function Live() {
               {s.goalCount} {s.goalCount === 1 ? 'goal' : 'goals'} ·{' '}
               {minutes(s.cumulativeSec)} played
             </div>
-            <PlayingTime state={s} roster={available} share={shareNow} />
+            <PlayingTime
+              state={s}
+              roster={available}
+              share={shareNow}
+              goalIsOrdinary={goalOrdinary}
+            />
             <div className="btn-row" style={{ marginTop: '1.2rem' }}>
               <button
                 type="button"

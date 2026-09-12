@@ -45,7 +45,18 @@ export const WEIGHTS = {
   deficit: 1.0,
   /** Staying put. This is what produces rolling subs with no special mechanism. */
   continuity: 0.35,
-  preferred: 0.3,
+  /**
+   * A position the player likes. Deliberately small: mid-game it should break
+   * a tie and nothing more, because insisting on it costs someone else their
+   * share of the game for no reason a child would notice.
+   */
+  preferred: 0.15,
+  /**
+   * The same preference at the first shift of a period. This is where a coach
+   * cares — the starting eleven and the shape coming out of half time are the
+   * ones people see and remember — so here it outweighs a moderate deficit.
+   */
+  preferredOpening: 2.5,
   /**
    * Per shift already spent waiting. Deliberately larger than `continuity`:
    * when two players are owed the same time, the one sitting on the bench goes
@@ -56,7 +67,6 @@ export const WEIGHTS = {
   rested: 0.9,
   keepTogether: 0.2,
   variety: 0.15,
-  overConsecutive: -0.5,
 } as const
 
 const REPAIR_ITERATIONS = 200
@@ -125,7 +135,12 @@ export function generatePlan(input: PlannerInput): PlanResult {
   const from = input.fromShiftIndex ?? 0
 
   const gkSlotDef = formation.slots.find((s) => s.requiredRole === 'GK')
-  const fieldSlots = formation.slots.filter((s) => s.requiredRole !== 'GK')
+  // When the goal is ordinary it is filled by the same pass as everything else,
+  // competing on the same deficit, and its minutes count the same.
+  const goalOrdinary = goalIsOrdinaryPosition(rules)
+  const fieldSlots = goalOrdinary
+    ? [...formation.slots]
+    : formation.slots.filter((s) => s.requiredRole !== 'GK')
 
   // Running state
   const credit = new Map<ID, number>(input.startingCredit ?? [])
@@ -161,7 +176,7 @@ export function generatePlan(input: PlannerInput): PlanResult {
   // ---- pass 1: keepers -------------------------------------------------
 
   const keeperOf = new Map<number, ID>() // block key -> playerId
-  if (gkSlotDef) {
+  if (gkSlotDef && !goalOrdinary) {
     assignKeepers({
       rules,
       grid,
@@ -200,16 +215,21 @@ export function generatePlan(input: PlannerInput): PlanResult {
      * them most, and the child who sat gets nothing back. So the planner only
      * ever reacts to goal time that has actually been served.
      */
-    const shiftKeeper = gkSlotDef ? shift.assignments[gkSlotDef.id] : undefined
-    const outfielders = [...(increments[i]?.keys() ?? [])].filter(
-      (id) => id !== shiftKeeper,
-    )
-    if (outfielders.length > 0) {
-      const each =
-        (duration * Math.min(fieldSlots.length, outfielders.length)) /
-        outfielders.length
-      for (const id of outfielders) {
-        outTarget.set(id, (outTarget.get(id) ?? 0) + each)
+    if (goalOrdinary) {
+      // Nothing is held out, so the shared ledger is simply the fair share.
+      for (const [id, sec] of inc) outTarget.set(id, (outTarget.get(id) ?? 0) + sec)
+    } else {
+      const shiftKeeper = gkSlotDef ? shift.assignments[gkSlotDef.id] : undefined
+      const outfielders = [...(increments[i]?.keys() ?? [])].filter(
+        (id) => id !== shiftKeeper,
+      )
+      if (outfielders.length > 0) {
+        const each =
+          (duration * Math.min(fieldSlots.length, outfielders.length)) /
+          outfielders.length
+        for (const id of outfielders) {
+          outTarget.set(id, (outTarget.get(id) ?? 0) + each)
+        }
       }
     }
 
@@ -227,12 +247,16 @@ export function generatePlan(input: PlannerInput): PlanResult {
         benchStreak,
         groupSec,
         roster,
+        goalOrdinary,
         input.startingCredit === undefined,
       )
       continue
     }
 
     const eligible = eligibleDuring(windows, slice)
+    // Preferred positions carry real weight at the start of a period — the
+    // starting eleven and the shape out of half time are what people see.
+    const isPeriodOpening = i === 0 || grid[i - 1]?.period !== slice.period
     const previous = i > 0 ? shifts[i - 1] : undefined
     const keeper = gkSlotDef ? shift.assignments[gkSlotDef.id] : undefined
 
@@ -249,11 +273,14 @@ export function generatePlan(input: PlannerInput): PlanResult {
       }
 
       const taken = new Set(Object.values(shift.assignments))
+      const wantsKeeper = slot.requiredRole === 'GK'
       const available = roster.filter(
         (p) =>
           eligible.has(p.id) &&
           !taken.has(p.id) &&
           p.id !== keeper &&
+          // Nobody is put in goal who has said they will not go in it.
+          (!wantsKeeper || p.gk !== 'never') &&
           !breaksKeepApart(p.id, taken, pairings),
       )
 
@@ -263,7 +290,18 @@ export function generatePlan(input: PlannerInput): PlanResult {
       // avoiders are only considered when nobody else can take the slot, which
       // is exactly "relaxes when the pool empties".
       const willing = available.filter((p) => !p.avoidGroups.includes(slot.group))
-      const candidates = willing.length > 0 ? willing : available
+      const pool = willing.length > 0 ? willing : available
+
+      // The cap on shifts in a row is a tier for the same reason. A coach who
+      // says "three blocks then a rest" means it, and a soft penalty loses that
+      // argument to any deficit worth a couple of minutes. It relaxes only when
+      // there is nobody left who is under the cap.
+      const fresh = pool.filter(
+        (p) =>
+          (consecutive.get(p.id) ?? 0) <
+          (p.maxConsecutiveShifts ?? rules.maxConsecutiveShifts),
+      )
+      const candidates = fresh.length > 0 ? fresh : pool
 
       if (candidates.length === 0) {
         warnings.push(`Nobody available for ${slot.label} in shift ${i + 1}.`)
@@ -281,6 +319,7 @@ export function generatePlan(input: PlannerInput): PlanResult {
           carry,
           consecutive,
           benchStreak,
+          isPeriodOpening,
           previous,
           groupSec,
           seasonByGroup: input.seasonByGroup,
@@ -306,6 +345,7 @@ export function generatePlan(input: PlannerInput): PlanResult {
       benchStreak,
       groupSec,
       roster,
+      goalOrdinary,
       true,
     )
   }
@@ -323,13 +363,14 @@ export function generatePlan(input: PlannerInput): PlanResult {
     from,
     byId,
     target: outTarget,
+    outfieldOnly: !goalOrdinary,
     ...(input.startingCredit ? { startingCredit: input.startingCredit } : {}),
   }
   repair(balanceArgs)
   smoothBenchRuns(balanceArgs)
 
   const assigned = totalAssigned(shifts, grid, formation)
-  const outAssigned = totalAssigned(shifts, grid, formation, 0, undefined, true)
+  const outAssigned = totalAssigned(shifts, grid, formation, 0, undefined, !goalOrdinary)
   return {
     shifts,
     seed,
@@ -469,6 +510,26 @@ interface KeeperBlock {
  * of ten-minute quarters gives two keepers a half each rather than four
  * keepers a quarter each.
  */
+export function shiftLengthSec(rules: GameRules): number {
+  const grid = buildShiftGrid(rules)
+  const first = grid[0]
+  return first ? first.endSec - first.startSec : rules.periodMinutes * 60
+}
+
+/**
+ * Whether the goal is just another position.
+ *
+ * A keeper held in goal for a whole period is a different kind of thing from a
+ * shift: it dominates their game, so it gets its own rotation and its own
+ * ledger. Set the shortest stint to a single shift and that stops being true —
+ * the goal rotates with everything else, its minutes count like everything
+ * else, and a keeper change is an ordinary substitution.
+ */
+export function goalIsOrdinaryPosition(rules: GameRules): boolean {
+  const want = (rules.gkMinMinutes ?? rules.periodMinutes) * 60
+  return want <= shiftLengthSec(rules) + 1
+}
+
 export function keeperBlockPeriods(rules: GameRules): number {
   const want = rules.gkMinMinutes ?? rules.periodMinutes
   const n = Math.ceil(want / Math.max(1, rules.periodMinutes))
@@ -509,6 +570,7 @@ interface ScoreArgs {
   carry: Map<ID, number>
   consecutive: Map<ID, number>
   benchStreak: Map<ID, number>
+  isPeriodOpening: boolean
   previous: PlannedShift | undefined
   groupSec: Map<ID, Record<PositionGroup, number>>
   seasonByGroup?: Map<ID, Record<PositionGroup, number>>
@@ -529,14 +591,13 @@ function score(a: ScoreArgs): number {
   if (wasHere) s += WEIGHTS.continuity
 
   // Avoided groups are filtered out before scoring — see the tier note above.
-  if (a.player.preferredGroups.includes(a.slot.group)) s += WEIGHTS.preferred
+  if (a.player.preferredGroups.includes(a.slot.group)) {
+    s += a.isPeriodOpening ? WEIGHTS.preferredOpening : WEIGHTS.preferred
+  }
 
   // Scaled by how many shifts they have already waited, so a long wait wins.
   const waited = a.benchStreak.get(id) ?? 0
   if (waited > 0) s += WEIGHTS.rested * waited
-
-  const limit = a.player.maxConsecutiveShifts ?? a.rules.maxConsecutiveShifts
-  if ((a.consecutive.get(id) ?? 0) >= limit) s += WEIGHTS.overConsecutive
 
   for (const pair of a.pairings) {
     if (pair.kind !== 'keepTogether') continue
@@ -573,6 +634,8 @@ interface RepairArgs {
   from: number
   byId: Map<ID, Player>
   target: Map<ID, number>
+  /** False when the goal is an ordinary position and counts like the rest. */
+  outfieldOnly: boolean
   startingCredit?: Map<ID, number>
 }
 
@@ -628,8 +691,9 @@ function repair(a: RepairArgs): void {
 
       const found = entries.find(([slotId, pid]) => {
         if (pid !== over.id) return false
-        // The goal is settled a whole block at a time and is not repair's to move.
-        if (slotId === gkSlotId) return false
+        // A keeper held for a whole block is not repair's to move; an ordinary
+        // one is, provided whoever takes the gloves is willing.
+        if (a.outfieldOnly && slotId === gkSlotId) return false
         if (!mayPlay(under, slotId)) return false
         return !a.pins.some((p) => p.shiftIndex === i && p.slotId === slotId)
       })
@@ -659,7 +723,7 @@ function repair(a: RepairArgs): void {
       a.formation,
       a.startingCredit ? a.from : 0,
       a.startingCredit,
-      true,
+      a.outfieldOnly,
     )
     const devs = a.roster
       .map((p) => ({ p, dev: (assigned.get(p.id) ?? 0) - (a.target.get(p.id) ?? 0) }))
@@ -716,6 +780,7 @@ function smoothBenchRuns(a: RepairArgs): void {
   const mayPlay = (p: Player, slotId: SlotId): boolean => {
     const slot = slotById.get(slotId)
     if (!slot) return false
+    if (slot.requiredRole === 'GK' && p.gk === 'never') return false
     if (!p.avoidGroups.includes(slot.group)) return true
     return universallyAvoided.has(slot.group)
   }
@@ -730,7 +795,7 @@ function smoothBenchRuns(a: RepairArgs): void {
       a.formation,
       a.startingCredit ? a.from : 0,
       a.startingCredit,
-      true,
+      a.outfieldOnly,
     )
     const devOf = (id: ID): number =>
       (assigned.get(id) ?? 0) - (a.target.get(id) ?? 0)
@@ -764,7 +829,7 @@ function smoothBenchRuns(a: RepairArgs): void {
         if (Math.abs(devOf(x.id) + d) > bound) continue
 
         const entry = Object.entries(shift.assignments).find(([slotId, pid]) => {
-          if (slotId === gkSlotId) return false
+          if (a.outfieldOnly && slotId === gkSlotId) return false
           if (!prevOn.has(pid)) return false // would only move the wait around
           if (nextOn && !nextOn.has(pid)) return false // would strand them instead
           if (a.pins.some((pin) => pin.shiftIndex === i && pin.slotId === slotId)) {
@@ -803,6 +868,7 @@ function applyShiftAccounting(
   benchStreak: Map<ID, number>,
   groupSec: Map<ID, Record<PositionGroup, number>>,
   roster: Player[],
+  creditGoal: boolean,
   countCredit: boolean,
 ): void {
   const onField = new Set<ID>()
@@ -810,7 +876,13 @@ function applyShiftAccounting(
     const pid = shift.assignments[slot.id]
     if (!pid) continue
     onField.add(pid)
-    if (countCredit) credit.set(pid, (credit.get(pid) ?? 0) + duration)
+    // Goal time only joins the shared ledger when the goal is an ordinary
+    // position. When it is a separate duty the target side already leaves the
+    // keeper out of the outfield share, so crediting them for it here too
+    // would count the stint twice and starve them of play afterwards.
+    if (countCredit && (creditGoal || slot.requiredRole !== 'GK')) {
+      credit.set(pid, (credit.get(pid) ?? 0) + duration)
+    }
     const rec = groupSec.get(pid)
     if (rec) rec[slot.group] += duration
   }

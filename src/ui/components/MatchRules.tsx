@@ -1,7 +1,7 @@
 import type { GameRules } from '@/domain/types'
 import { gameLengthSec } from '@/domain/types'
 import { buildShiftGrid } from '@/domain/fairness'
-import { keeperBlockPeriods } from '@/domain/planner'
+import { goalIsOrdinaryPosition, keeperBlockPeriods, shiftLengthSec } from '@/domain/planner'
 
 interface Preset {
   label: string
@@ -30,12 +30,25 @@ export default function MatchRules({
   const shifts = buildShiftGrid(rules)
   const perPeriod = shifts.filter((s) => s.period === 1).length
   const shiftLen = shifts[0] ? (shifts[0].endSec - shifts[0].startSec) / 60 : 0
+  const ordinary = goalIsOrdinaryPosition(rules)
   const blockPeriods = keeperBlockPeriods(rules)
   const keeperCount = Math.ceil(rules.periodCount / blockPeriods)
-  const keeperHint =
-    keeperCount <= 1
+  const shiftMin = Math.round(shiftLengthSec(rules) / 60)
+  const keeperHint = ordinary
+    ? 'The goal is filled like any other position, changes at ordinary substitutions, and its minutes count the same.'
+    : keeperCount <= 1
       ? 'One keeper for the whole game.'
       : `${keeperCount} keepers, ${blockPeriods * rules.periodMinutes} min each. Changes only at period breaks.`
+
+  /** How long a keeper stays in, offered as the choices that actually differ. */
+  const keeperChoices: { label: string; minutes: number }[] = [
+    { label: 'Like any position', minutes: shiftMin },
+    ...Array.from({ length: rules.periodCount }, (_, i) => ({
+      label: i === 0 ? '1 period' : `${i + 1} periods`,
+      minutes: (i + 1) * rules.periodMinutes,
+    })),
+  ]
+  const keeperMinutes = rules.gkMinMinutes ?? rules.periodMinutes
 
   return (
     <>
@@ -93,14 +106,39 @@ export default function MatchRules({
             max={11}
             onChange={(v) => onChange({ playersOnField: v })}
           />
+          <div style={{ marginBottom: '0.9rem' }}>
+            <div className="field-label">Keeper stays in goal for</div>
+            <div className="chips">
+              {keeperChoices.map((c) => (
+                <button
+                  key={c.label}
+                  type="button"
+                  className="chipbtn"
+                  aria-pressed={
+                    c.minutes === shiftMin
+                      ? ordinary
+                      : !ordinary && keeperMinutes === c.minutes
+                  }
+                  onClick={() => onChange({ gkMinMinutes: c.minutes })}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
+            <div className="dim" style={{ marginTop: '0.3rem' }}>
+              {keeperHint}
+            </div>
+          </div>
+
           <Stepper
-            label="Least time in goal (minutes)"
-            value={rules.gkMinMinutes ?? rules.periodMinutes}
-            min={5}
-            max={60}
-            step={5}
-            onChange={(v) => onChange({ gkMinMinutes: v })}
-            hint={keeperHint}
+            label="Most shifts in a row"
+            value={rules.maxConsecutiveShifts}
+            min={1}
+            max={12}
+            onChange={(v) => onChange({ maxConsecutiveShifts: v })}
+            hint={`A player comes off after ${rules.maxConsecutiveShifts} block${
+              rules.maxConsecutiveShifts === 1 ? '' : 's'
+            } at most. Relaxed only when there is nobody left to bring on.`}
           />
           <Stepper
             label="Sub every (minutes)"

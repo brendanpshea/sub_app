@@ -8,6 +8,7 @@ import { reconcileAttendance } from '@/domain/attendance'
 import { BUILT_IN_FORMATIONS, findFormation } from '@/domain/formations'
 import { minutes, mmss, outfieldShareUpTo } from '@/domain/fairness'
 import { deriveLive } from '@/domain/live'
+import { goalIsOrdinaryPosition } from '@/domain/planner'
 import type { Formation } from '@/domain/types'
 import { displayName } from '@/domain/types'
 import AppBar from '../components/AppBar'
@@ -56,11 +57,14 @@ export default function Recap() {
   const available = roster.filter((p) =>
     attendance.some((a) => a.playerId === p.id && a.status !== 'absent'),
   )
+  const goalOrdinary = goalIsOrdinaryPosition(game.rules)
   const share = outfieldShareUpTo(
     game.rules,
     attendance,
-    s.keeperSpans,
-    formation.slots.filter((sl) => sl.requiredRole !== 'GK').length,
+    goalOrdinary ? [] : s.keeperSpans,
+    goalOrdinary
+      ? formation.slots.length
+      : formation.slots.filter((sl) => sl.requiredRole !== 'GK').length,
     s.cumulativeSec,
   )
 
@@ -120,10 +124,16 @@ export default function Recap() {
         </div>
 
         <div className="section-label">Playing time</div>
-        <PlayingTime state={s} roster={available} share={share} />
+        <PlayingTime
+          state={s}
+          roster={available}
+          share={share}
+          goalIsOrdinary={goalOrdinary}
+        />
         <div className="dim" style={{ marginTop: '0.5rem', padding: '0 0.2rem' }}>
-          Field minutes, with time in goal shown separately. The team shares out
-          field time; goal duty is rotated on its own.
+          {goalOrdinary
+            ? 'Total minutes. The goal rotates like any other position.'
+            : 'Field minutes, with time in goal shown separately. The team shares out field time; goal duty is rotated on its own.'}
         </div>
 
         {goals.length > 0 ? (

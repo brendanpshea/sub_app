@@ -498,3 +498,111 @@ describe('substitution rhythm', () => {
       .toBeLessThanOrEqual(typical)
   })
 })
+
+describe('the goal as an ordinary position', () => {
+  // Ten players, two 25-minute halves, five-minute blocks — a real setup.
+  const HALVES: GameRules = {
+    ...DEFAULT_RULES,
+    periodCount: 2,
+    periodMinutes: 25,
+    shiftMinutes: 5,
+    maxConsecutiveShifts: 3,
+  }
+  const ORDINARY: GameRules = { ...HALVES, gkMinMinutes: 5 }
+  const BLOCK: GameRules = { ...HALVES, gkMinMinutes: 25 }
+
+  function runsOf(plan: PlannedShift[], id: string): { on: number; off: number } {
+    let onRun = 0
+    let offRun = 0
+    let maxOn = 0
+    let maxOff = 0
+    for (const sh of plan) {
+      if (onField(sh).includes(id)) {
+        onRun++
+        offRun = 0
+      } else {
+        offRun++
+        onRun = 0
+      }
+      maxOn = Math.max(maxOn, onRun)
+      maxOff = Math.max(maxOff, offRun)
+    }
+    return { on: maxOn, off: maxOff }
+  }
+
+  it('keeps everyone to the same minutes when the goal rotates', () => {
+    const roster = squad(10)
+    const plan = generatePlan(input(roster, { rules: ORDINARY }))
+    const mins = roster.map((p) => plan.assigned.get(p.id) ?? 0)
+    expect(Math.max(...mins) - Math.min(...mins)).toBe(0)
+  })
+
+  it('honours the cap on shifts in a row', () => {
+    const roster = squad(10)
+    const plan = generatePlan(input(roster, { rules: ORDINARY }))
+    for (const p of roster) {
+      const { on, off } = runsOf(plan.shifts, p.id)
+      expect(on, `${p.id} played ${on} blocks in a row`).toBeLessThanOrEqual(3)
+      expect(off, `${p.id} sat ${off} blocks in a row`).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('still refuses to put an unwilling player in goal', () => {
+    const roster = [
+      ...squad(8, { gk: 'never' }),
+      player('k1', { gk: 'willing' }),
+      player('k2', { gk: 'willing' }),
+    ]
+    const plan = generatePlan(input(roster, { rules: ORDINARY }))
+    for (const sh of plan.shifts) {
+      expect(['k1', 'k2']).toContain(sh.assignments['gk'])
+    }
+  })
+
+  it('rotates the gloves rather than pinning one child in goal', () => {
+    const roster = squad(10)
+    const plan = generatePlan(input(roster, { rules: ORDINARY }))
+    const keepers = new Set(plan.shifts.map((sh) => sh.assignments['gk']))
+    expect(keepers.size).toBeGreaterThan(2)
+  })
+
+  it('does not credit block goal time against outfield play', () => {
+    // The bug: goal minutes were added to the shared ledger while the target
+    // side left the keeper out of it, so a keeper came out of a 25-minute
+    // stint looking 25 minutes over and was starved of play afterwards.
+    const roster = squad(10)
+    const plan = generatePlan(input(roster, { rules: BLOCK }))
+    expect(plan.outfieldSpreadSec).toBeLessThanOrEqual(300)
+  })
+
+  it('leaves the block mode changing keeper only at the break', () => {
+    const roster = squad(10)
+    const plan = generatePlan(input(roster, { rules: BLOCK }))
+    for (const period of [1, 2]) {
+      const inPeriod = plan.shifts.filter((sh) => sh.period === period)
+      const keepers = new Set(inPeriod.map((sh) => sh.assignments['gk']))
+      expect(keepers.size, `period ${period}`).toBe(1)
+    }
+  })
+})
+
+describe('preferred positions', () => {
+  it('are honoured at the start of a period', () => {
+    // A coach cares about the shape they kick off and restart with; mid-period
+    // a preference should not cost anyone else their share of the game.
+    const roster = [
+      player('striker', { preferredGroups: ['FWD'] }),
+      ...squad(11).slice(1),
+    ]
+    const plan = generatePlan(input(roster))
+    const openings = plan.shifts.filter(
+      (sh, i) => i === 0 || plan.shifts[i - 1]?.period !== sh.period,
+    )
+    const upFront = openings.filter((sh) =>
+      FORMATION.slots.some(
+        (sl) => sl.group === 'FWD' && sh.assignments[sl.id] === 'striker',
+      ),
+    ).length
+    expect(upFront).toBeGreaterThan(0)
+  })
+})

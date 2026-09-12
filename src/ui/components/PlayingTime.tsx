@@ -9,6 +9,8 @@ interface Props {
   roster: Player[]
   /** Share of *field* time each player should have had. */
   share: Map<ID, number>
+  /** When the goal is an ordinary position its minutes are not split out. */
+  goalIsOrdinary?: boolean
 }
 
 /**
@@ -19,8 +21,8 @@ interface Props {
  * keeper reading "+7:00 over" would be a reproach for doing exactly what was
  * asked of them.
  */
-export default function PlayingTime({ state, roster, share }: Props) {
-  const out = outfieldPlayed(state)
+export default function PlayingTime({ state, roster, share, goalIsOrdinary }: Props) {
+  const out = goalIsOrdinary ? state.playedSec : outfieldPlayed(state)
   const sorted = [...roster].sort(
     (a, b) => (state.playedSec.get(b.id) ?? 0) - (state.playedSec.get(a.id) ?? 0),
   )
@@ -28,7 +30,7 @@ export default function PlayingTime({ state, roster, share }: Props) {
   return (
     <div className="card">
       {sorted.map((p) => {
-        const gk = state.gkSec.get(p.id) ?? 0
+        const gk = goalIsOrdinary ? 0 : (state.gkSec.get(p.id) ?? 0)
         const field = out.get(p.id) ?? 0
         const dev = field - (share.get(p.id) ?? 0)
         const tone = Math.abs(dev) <= 100 ? 'ok' : dev < 0 ? 'owed' : 'over'
