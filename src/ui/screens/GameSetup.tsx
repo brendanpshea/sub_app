@@ -191,17 +191,15 @@ export default function GameSetup() {
           <button
             type="button"
             className="btn"
-            disabled={inCount < game.rules.playersOnField}
+            disabled={inCount === 0}
             onClick={() => nav(`/team/${teamId}/game/${gameId}/plan`)}
           >
-            {inCount < game.rules.playersOnField
-              ? `Need ${game.rules.playersOnField - inCount} more`
-              : 'Shift chart'}
+            Shift chart
           </button>
           <button
             type="button"
             className="btn primary"
-            disabled={inCount < game.rules.playersOnField}
+            disabled={inCount === 0}
             onClick={() => nav(`/team/${teamId}/game/${gameId}/live`)}
           >
             {game.status === 'live' ? 'Back to the game' : 'Match day'}

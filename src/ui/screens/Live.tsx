@@ -14,6 +14,7 @@ import {
   outfieldShareUpTo,
 } from '@/domain/fairness'
 import {
+  applyDiff,
   currentShiftIndex,
   deriveLive,
   diffToPlan,
@@ -99,7 +100,9 @@ export default function Live() {
   const [autoBuilt, setAutoBuilt] = useState(false)
   useEffect(() => {
     if (autoBuilt || !game || plan !== null) return
-    if (available.length < game.rules.playersOnField) return
+    // Short-handed is a normal Saturday. The planner fills what it can and
+    // everyone plays the whole game; refusing to start would strand the coach.
+    if (available.length === 0) return
     setAutoBuilt(true)
     const result = generatePlan({
       rules: game.rules,
@@ -446,6 +449,18 @@ export default function Live() {
     await appendMany(gameId, eventsForDiff(diff), s!.cumulativeSec)
     setManualSub(false)
     setSnoozeUntilSec(0)
+
+    if (targetIndex > shiftIdx) {
+      // Brought forward from the next shift. The pitch now matches shift N+1
+      // while the plan's current shift is still N — left alone, the sheet
+      // sees that mismatch and immediately proposes swapping everyone back.
+      // Hold what is on the pitch as the current shift and re-plan from there.
+      await replanRemainder(shiftIdx, applyDiff(s!.onField, diff))
+      setToast('Plan adjusted')
+      window.setTimeout(() => setToast(null), 2200)
+      return
+    }
+
     const drift = s!.periodElapsedSec - plannedRelSec
     await afterSub(targetIndex, drift)
   }
@@ -520,7 +535,9 @@ export default function Live() {
       playerId,
       arriving
         ? { status: 'late', availableFromSec: at, availableUntilSec: undefined }
-        : { status: 'leaveEarly', availableUntilSec: at, availableFromSec: undefined },
+        : at <= 0
+          ? { status: 'absent', availableFromSec: undefined, availableUntilSec: undefined }
+          : { status: 'leaveEarly', availableUntilSec: at, availableFromSec: undefined },
     )
 
     let field = s!.onField
@@ -655,26 +672,33 @@ export default function Live() {
 
       <div className="live-body">
         {s.status === 'pre' ? (
-          available.length < rules.playersOnField ? (
+          available.length === 0 ? (
             <div className="empty">
-              <strong>Not enough players</strong>
-              {available.length} available, {rules.playersOnField} needed. Set
-              attendance first.
+              <strong>Nobody is here yet</strong>
+              Mark who has arrived under &ldquo;Who is here&rdquo; in the menu.
             </div>
           ) : (
             <LineupEditor
               formation={formation}
               assignments={startAssign}
               squad={available}
-              label={`Starting ${rules.playersOnField}`}
-              hint="Tap a position to change it."
+              label={
+                available.length < rules.playersOnField
+                  ? `Starting ${available.length} — short of ${rules.playersOnField}`
+                  : `Starting ${rules.playersOnField}`
+              }
+              hint={
+                available.length < rules.playersOnField
+                  ? 'Everyone plays the whole game. Tap a position to move the gap.'
+                  : 'Tap a position to change it.'
+              }
               onPick={(slotId, playerId) => void setLineupAt(0, slotId, playerId)}
               onShuffle={() => void reshuffleFrom(0)}
               footer={
                 <button
                   type="button"
                   className="cta-big"
-                  disabled={Object.keys(startAssign).length < rules.playersOnField}
+                  disabled={Object.keys(startAssign).length === 0}
                   onClick={() => void startPeriod(1)}
                 >
                   KICK OFF

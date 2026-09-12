@@ -80,6 +80,14 @@ export async function undoLastGroup(gameId: string): Promise<boolean> {
     const last = alive[alive.length - 1]
     if (!last) return false
 
+    // Undoing the end of a period is not a plain void: with the end removed
+    // the clock would resume having counted every second since. Reopening
+    // already knows how to put it back, so hand over to that.
+    if (last.body.type === 'PERIOD_END') {
+      await reopenGame(gameId)
+      return true
+    }
+
     // Events written together share a wall-clock timestamp.
     const group = alive.filter((e) => e.wallAt === last.wallAt)
     let seq = all.reduce((m, x) => Math.max(m, x.seq), 0)

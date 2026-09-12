@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  applyDiff,
   currentShiftIndex,
   deriveLive,
   diffToPlan,
@@ -535,5 +536,51 @@ describe('diffToPlan — the goal', () => {
       const moved = [...sub.swaps.map((w) => w.on), ...sub.onOnly.map((o) => o.playerId)]
       expect(moved).not.toContain('zoe')
     })
+  })
+})
+
+describe('applyDiff', () => {
+  const slots = FORMATION.slots
+  const FIELD = { gk: 'zoe', lb: 'a', rb: 'b', lm: 'c', cm: 'd', rm: 'e', st: 'f' }
+
+  it('produces the field a substitution leaves behind', () => {
+    const target = { ...FIELD, st: 'x', lb: 'y' }
+    const diff = diffToPlan(FIELD, target, { slots })
+    const after = applyDiff(FIELD, diff)
+    // Same players as the plan wanted, in the vacated shirts.
+    expect(new Set(Object.values(after))).toEqual(new Set(Object.values(target)))
+    expect(Object.keys(after).sort()).toEqual(Object.keys(FIELD).sort())
+  })
+
+  it('agrees with the plan afterwards, so nothing is proposed twice', () => {
+    // The bug this guards: a change brought forward to an early stoppage left
+    // the plan's current shift disagreeing with the pitch, and the sheet
+    // immediately proposed swapping everyone back.
+    const target = { ...FIELD, st: 'x' }
+    const after = applyDiff(FIELD, diffToPlan(FIELD, target, { slots }))
+    const again = diffToPlan(after, after, { slots })
+    expect(isSubDue(again)).toBe(false)
+  })
+
+  it('applies a keeper trade in place', () => {
+    const target = { ...FIELD, gk: 'b', rb: 'zoe' }
+    const after = applyDiff(FIELD, diffToPlan(FIELD, target, { slots }))
+    expect(after['gk']).toBe('b')
+    expect(after['rb']).toBe('zoe')
+  })
+
+  it('applies a keeper coming off the bench', () => {
+    const target = { ...FIELD, gk: 'mia' }
+    const after = applyDiff(FIELD, diffToPlan(FIELD, target, { slots }))
+    expect(after['gk']).toBe('mia')
+    expect(Object.values(after)).not.toContain('zoe')
+  })
+
+  it('leaves a gap when someone comes off with no replacement', () => {
+    const target = { ...FIELD }
+    delete (target as Record<string, string>)['st']
+    const after = applyDiff(FIELD, diffToPlan(FIELD, target, { slots }))
+    expect(after['st']).toBeUndefined()
+    expect(Object.keys(after)).toHaveLength(6)
   })
 })

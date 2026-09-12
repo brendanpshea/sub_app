@@ -532,6 +532,32 @@ export function planFieldChange(
   return { kind: 'fill', events, nextField }
 }
 
+/**
+ * The field as it will stand once a planned change has been made.
+ *
+ * Needed when a change is brought forward to an earlier stoppage: the plan's
+ * *current* shift must then be told what is actually on the pitch, or it
+ * notices the mismatch and proposes swapping everyone straight back.
+ */
+export function applyDiff(
+  onField: Record<SlotId, ID>,
+  diff: SubPlan,
+): Record<SlotId, ID> {
+  const next: Record<SlotId, ID> = { ...onField }
+  if (diff.keeper) {
+    const k = diff.keeper
+    next[k.gkSlotId] = k.on
+    if (k.tradeSlotId) next[k.tradeSlotId] = k.off
+  }
+  for (const sw of diff.swaps) {
+    delete next[sw.offSlot]
+    next[sw.onSlot] = sw.on
+  }
+  for (const o of diff.offOnly) delete next[o.slotId]
+  for (const o of diff.onOnly) next[o.slotId] = o.playerId
+  return next
+}
+
 export function isSubDue(sub: SubPlan): boolean {
   return (
     sub.keeper !== undefined ||
