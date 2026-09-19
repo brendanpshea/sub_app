@@ -12,7 +12,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg'],
+      includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
         name: 'Touchline',
         short_name: 'Touchline',
@@ -23,9 +23,17 @@ export default defineConfig({
         orientation: 'portrait',
         start_url: './',
         scope: './',
-        // TODO: add 192/512 maskable PNGs before shipping to a phone home screen —
-        // Android prefers raster icons for the launcher.
+        // Android's launcher and Chrome's install prompt want raster icons.
+        // Regenerate with scripts/make-icons.py if the drawing changes.
         icons: [
+          { src: 'icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          {
+            src: 'icon-maskable-512.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'maskable',
+          },
           { src: 'favicon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
         ],
       },

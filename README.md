@@ -25,6 +25,13 @@ IndexedDB on the device, because fields have no signal.
 
 Backup and restore as JSON, because a lost phone is otherwise a lost season.
 
+## Installing it
+
+Open <https://brendanpshea.github.io/sub_app/> on the phone. On Android, Chrome
+offers *Install app* in its menu; on an iPhone, use Safari's *Share → Add to
+Home Screen*. After the first visit it works with no signal. The icons are
+rendered by `scripts/make-icons.py` (needs Pillow) from the favicon's design.
+
 ## Running it
 
 ```sh
@@ -107,11 +114,14 @@ and the recap read from it, and so does the planner. See
 Greedy plus two cheap cleanup passes, not a constraint solver — it runs in
 milliseconds, which is what makes the re-roll button feel instant.
 
-1. **Keepers**, a whole block of periods at a time. `gkMinMinutes` sets the
-   shortest stint, rounded up to whole periods and never less than one: twenty
-   minutes of ten-minute quarters gives two keepers a half each rather than four
-   keepers a quarter each. A change can then only land at a period break, never
-   at a throw-in. The pool is ordered by fewest goalkeeping periods this season.
+1. **Keepers**, in contiguous stints. `gkMinMinutes` sets the stint, rounded to
+   whole substitution blocks. A stint shorter than half a period divides each
+   period into turns, with a short remainder folded into the turn before it —
+   a 25-minute half with 10-minute stints gives 10 then 15, so nobody takes the
+   gloves for the last five minutes. Goal minutes then count like any other.
+   A stint of a period or more is rounded up to whole periods, changes only at
+   a break, and is kept on its own ledger. The pool is ordered by fewest
+   goalkeeping periods this season.
 2. **Field slots**, deficit-greedy on the outfield ledger, tightest slots first.
    `WEIGHTS` in `planner.ts` is the whole of the intelligence and is meant to be
    tuned against real rosters.
@@ -209,8 +219,6 @@ used in a real game.
 
 Known gaps:
 
-- **No PNG icons.** The manifest points at the SVG favicon, so the home-screen
-  icon on Android will be poor until 192/512 maskable PNGs exist.
 - **No season ledger.** `carriedDeficit` and `seasonGkPeriods` are accepted by
   the planner but nothing supplies them, so keeper rotation and playing-time
   debt do not carry from one week to the next. Within a game both work.

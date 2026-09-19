@@ -31,8 +31,9 @@ import { mulberry32 } from './ids'
  * whole of the "intelligence" and are meant to be tuned against real rosters.
  *
  * Four passes:
- *   1. Keepers, at period granularity — the tightest constraint, and children
- *      need a whole quarter to settle into the position.
+ *   1. Keepers, in contiguous stints of whole substitution blocks — the
+ *      tightest constraint, and nobody should be handed the gloves for five
+ *      minutes. Skipped when the gloves change every block.
  *   2. Field slots, deficit-greedy, tightest slots first.
  *   3. Repair — a bounded local search that closes the remaining spread.
  *   4. Smoothing — breaks up runs that are too long on the field and runs of
@@ -519,15 +520,7 @@ interface KeeperBlock {
   periods: number[]
 }
 
-/**
- * How long one keeper stays in goal.
- *
- * Always a whole number of periods, and never fewer than one: swapping keepers
- * mid-quarter means doing it at a throw-in, which is fiddly and leaves a goal
- * briefly unguarded. `gkMinMinutes` then widens the block further — 20 minutes
- * of ten-minute quarters gives two keepers a half each rather than four
- * keepers a quarter each.
- */
+/** Length of one substitution block, in seconds. */
 export function shiftLengthSec(rules: GameRules): number {
   const grid = buildShiftGrid(rules)
   const first = grid[0]
@@ -581,6 +574,12 @@ export function goalIsOrdinaryPosition(rules: GameRules): boolean {
   return shiftsPerPeriod(rules) >= 2 * keeperBlockShifts(rules)
 }
 
+/**
+ * For stints of a period or more: how many whole periods one keeper holds the
+ * goal. Rounded up and never fewer than one, so the change lands at a break
+ * rather than a throw-in — 20 minutes of ten-minute quarters gives two keepers
+ * a half each rather than four keepers a quarter each.
+ */
 export function keeperBlockPeriods(rules: GameRules): number {
   const want = rules.gkMinMinutes ?? rules.periodMinutes
   const n = Math.ceil(want / Math.max(1, rules.periodMinutes))
