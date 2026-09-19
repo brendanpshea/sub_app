@@ -1,7 +1,12 @@
 import type { GameRules } from '@/domain/types'
 import { gameLengthSec } from '@/domain/types'
 import { buildShiftGrid } from '@/domain/fairness'
-import { goalIsOrdinaryPosition, keeperBlockPeriods, shiftLengthSec } from '@/domain/planner'
+import {
+  goalIsOrdinaryPosition,
+  keeperStintShifts,
+  shiftLengthSec,
+  shiftsPerPeriod,
+} from '@/domain/planner'
 
 interface Preset {
   label: string
@@ -31,24 +36,32 @@ export default function MatchRules({
   const perPeriod = shifts.filter((s) => s.period === 1).length
   const shiftLen = shifts[0] ? (shifts[0].endSec - shifts[0].startSec) / 60 : 0
   const ordinary = goalIsOrdinaryPosition(rules)
-  const blockPeriods = keeperBlockPeriods(rules)
-  const keeperCount = Math.ceil(rules.periodCount / blockPeriods)
-  const shiftMin = Math.round(shiftLengthSec(rules) / 60)
+  const shiftMin = shiftLengthSec(rules) / 60
+  const gkPerPeriod = shiftsPerPeriod(rules)
+  const stints = keeperStintShifts(rules)
+  const stintList = [...new Set(stints.map((n) => Math.round(n * shiftMin)))]
+    .sort((a, b) => a - b)
+    .join(' and ')
   const keeperHint = ordinary
-    ? 'The goal is filled like any other position, changes at ordinary substitutions, and its minutes count the same.'
-    : keeperCount <= 1
+    ? `${stints.length} turn${stints.length === 1 ? '' : 's'} in goal each period, of ${stintList} min. Goal minutes count like any other.`
+    : stints[0] === gkPerPeriod * rules.periodCount
       ? 'One keeper for the whole game.'
-      : `${keeperCount} keepers, ${blockPeriods * rules.periodMinutes} min each. Changes only at period breaks.`
+      : `One keeper a period, ${rules.periodMinutes} min each. Changes only at the break.`
 
-  /** How long a keeper stays in, offered as the choices that actually differ. */
-  const keeperChoices: { label: string; minutes: number }[] = [
-    { label: 'Like any position', minutes: shiftMin },
-    ...Array.from({ length: rules.periodCount }, (_, i) => ({
-      label: i === 0 ? '1 period' : `${i + 1} periods`,
-      minutes: (i + 1) * rules.periodMinutes,
-    })),
-  ]
-  const keeperMinutes = rules.gkMinMinutes ?? rules.periodMinutes
+  /**
+   * Stint lengths worth offering: whole numbers of substitution blocks that
+   * still leave at least two turns in a period, then whole periods.
+   */
+  const keeperChoices: { label: string; minutes: number }[] = []
+  for (let n = 1; gkPerPeriod >= 2 * n; n++) {
+    keeperChoices.push({ label: `${Math.round(n * shiftMin)} min`, minutes: Math.round(n * shiftMin) })
+  }
+  for (let i = 1; i <= rules.periodCount; i++) {
+    const minutes = i * rules.periodMinutes
+    if (keeperChoices.some((c) => c.minutes === minutes)) continue
+    keeperChoices.push({ label: i === 1 ? '1 period' : `${i} periods`, minutes })
+  }
+  const keeperMinutes = Math.round(rules.gkMinMinutes ?? rules.periodMinutes)
 
   return (
     <>
@@ -114,11 +127,7 @@ export default function MatchRules({
                   key={c.label}
                   type="button"
                   className="chipbtn"
-                  aria-pressed={
-                    c.minutes === shiftMin
-                      ? ordinary
-                      : !ordinary && keeperMinutes === c.minutes
-                  }
+                  aria-pressed={keeperMinutes === c.minutes}
                   onClick={() => onChange({ gkMinMinutes: c.minutes })}
                 >
                   {c.label}

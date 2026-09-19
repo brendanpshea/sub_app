@@ -35,9 +35,9 @@ import { mulberry32 } from './ids'
  *      need a whole quarter to settle into the position.
  *   2. Field slots, deficit-greedy, tightest slots first.
  *   3. Repair — a bounded local search that closes the remaining spread.
- *   4. Smoothing — breaks up runs of consecutive shifts on the bench without
- *      letting anyone's total drift, because level minutes still read as unfair
- *      when the waiting arrives in one lump.
+ *   4. Smoothing — breaks up runs that are too long on the field and runs of
+ *      more than one shift on the bench, without letting anyone's total drift.
+ *      Level minutes still read as unfair when they arrive in the wrong shape.
  */
 
 export const WEIGHTS = {
@@ -135,10 +135,18 @@ export function generatePlan(input: PlannerInput): PlanResult {
   const from = input.fromShiftIndex ?? 0
 
   const gkSlotDef = formation.slots.find((s) => s.requiredRole === 'GK')
-  // When the goal is ordinary it is filled by the same pass as everything else,
-  // competing on the same deficit, and its minutes count the same.
+  /**
+   * Two separate questions about the goal.
+   *
+   * Whether its minutes count like everyone else's — true unless a stint is a
+   * whole period, in which case it dominates a child's game and gets its own
+   * ledger. And whether the ordinary pass fills it, which is only so when the
+   * gloves change every shift; any longer needs contiguous blocks, and those
+   * are laid out first.
+   */
   const goalOrdinary = goalIsOrdinaryPosition(rules)
-  const fieldSlots = goalOrdinary
+  const goalInRotation = keeperBlockShifts(rules) === 1
+  const fieldSlots = goalInRotation
     ? [...formation.slots]
     : formation.slots.filter((s) => s.requiredRole !== 'GK')
 
@@ -176,7 +184,7 @@ export function generatePlan(input: PlannerInput): PlanResult {
   // ---- pass 1: keepers -------------------------------------------------
 
   const keeperOf = new Map<number, ID>() // block key -> playerId
-  if (gkSlotDef && !goalOrdinary) {
+  if (gkSlotDef && !goalInRotation) {
     assignKeepers({
       rules,
       grid,
@@ -296,9 +304,14 @@ export function generatePlan(input: PlannerInput): PlanResult {
       // says "three blocks then a rest" means it, and a soft penalty loses that
       // argument to any deficit worth a couple of minutes. It relaxes only when
       // there is nobody left who is under the cap.
+      //
+      // The run is measured in both directions, not just backwards: the
+      // keeper's blocks are already on the chart, so three shifts outfield
+      // immediately before a stint in goal is a run of five and needs to be
+      // seen as one here rather than patched up afterwards.
       const fresh = pool.filter(
         (p) =>
-          (consecutive.get(p.id) ?? 0) <
+          runLengthAt(shifts, i, p.id) <=
           (p.maxConsecutiveShifts ?? rules.maxConsecutiveShifts),
       )
       const candidates = fresh.length > 0 ? fresh : pool
@@ -364,9 +377,14 @@ export function generatePlan(input: PlannerInput): PlanResult {
     byId,
     target: outTarget,
     outfieldOnly: !goalOrdinary,
+    goalMovable: goalInRotation,
+    maxRun: rules.maxConsecutiveShifts,
     ...(input.startingCredit ? { startingCredit: input.startingCredit } : {}),
   }
   repair(balanceArgs)
+  smoothLongRuns(balanceArgs)
+  // Last, and deliberately unconstrained by the run cap: a child sitting two
+  // blocks running is a worse thing to explain than one playing a block long.
   smoothBenchRuns(balanceArgs)
 
   const assigned = totalAssigned(shifts, grid, formation)
@@ -483,7 +501,7 @@ function assignKeepers(a: KeeperArgs): void {
     // A block can span several periods, and the per-game cap counts periods.
     a.gkPeriodsThisGame.set(
       chosen,
-      (a.gkPeriodsThisGame.get(chosen) ?? 0) + block.periods.length,
+      (a.gkPeriodsThisGame.get(chosen) ?? 0) + Math.max(1, block.periods.length),
     )
     for (const i of indices) {
       if (i < a.from) continue
@@ -516,18 +534,51 @@ export function shiftLengthSec(rules: GameRules): number {
   return first ? first.endSec - first.startSec : rules.periodMinutes * 60
 }
 
+/** Shifts per period, which is what a keeper stint is measured in. */
+export function shiftsPerPeriod(rules: GameRules): number {
+  return Math.max(1, buildShiftGrid(rules).filter((s) => s.period === 1).length)
+}
+
+/** How many substitution blocks one keeper stays in goal for. */
+export function keeperBlockShifts(rules: GameRules): number {
+  const want = (rules.gkMinMinutes ?? rules.periodMinutes) * 60
+  return Math.max(1, Math.round(want / shiftLengthSec(rules)))
+}
+
+/**
+ * The stints a period is divided into, in shifts.
+ *
+ * A remainder too short to stand on its own is folded into the block before
+ * it: handing a child the gloves for the last block of a half is not long
+ * enough to be worth anything, and it is exactly where a naive division puts
+ * them.
+ */
+export function keeperStintShifts(rules: GameRules): number[] {
+  const want = keeperBlockShifts(rules)
+  const per = shiftsPerPeriod(rules)
+  if (want >= per) return [per * keeperBlockPeriods(rules)]
+  const out: number[] = []
+  let i = 0
+  while (i < per) {
+    const remaining = per - i
+    const take = remaining - want < want ? remaining : want
+    out.push(take)
+    i += take
+  }
+  return out
+}
+
 /**
  * Whether the goal is just another position.
  *
  * A keeper held in goal for a whole period is a different kind of thing from a
- * shift: it dominates their game, so it gets its own rotation and its own
- * ledger. Set the shortest stint to a single shift and that stops being true —
- * the goal rotates with everything else, its minutes count like everything
- * else, and a keeper change is an ordinary substitution.
+ * shift or two: it dominates their game, so it gets its own rotation and its
+ * own ledger. Anything short enough that a period holds at least two stints is
+ * an ordinary position — its minutes count like everyone else's, and the child
+ * in goal is on the same rotation as the child at left back.
  */
 export function goalIsOrdinaryPosition(rules: GameRules): boolean {
-  const want = (rules.gkMinMinutes ?? rules.periodMinutes) * 60
-  return want <= shiftLengthSec(rules) + 1
+  return shiftsPerPeriod(rules) >= 2 * keeperBlockShifts(rules)
 }
 
 export function keeperBlockPeriods(rules: GameRules): number {
@@ -537,27 +588,67 @@ export function keeperBlockPeriods(rules: GameRules): number {
 }
 
 function keeperBlocks(rules: GameRules, grid: ShiftSlice[]): KeeperBlock[] {
-  const per = keeperBlockPeriods(rules)
-  const byKey = new Map<number, KeeperBlock>()
+  const want = keeperBlockShifts(rules)
+  const perPeriod = shiftsPerPeriod(rules)
 
-  for (const s of grid) {
-    const key = Math.floor((s.period - 1) / per)
-    const b = byKey.get(key)
-    if (b) {
-      b.endSec = Math.max(b.endSec, s.endSec)
-      b.shiftIndices.push(s.index)
-      if (!b.periods.includes(s.period)) b.periods.push(s.period)
-    } else {
-      byKey.set(key, {
-        key,
-        startSec: s.startSec,
-        endSec: s.endSec,
-        shiftIndices: [s.index],
-        periods: [s.period],
+  // A stint of a period or more: group whole periods, as before.
+  if (want >= perPeriod) {
+    const per = keeperBlockPeriods(rules)
+    const byKey = new Map<number, KeeperBlock>()
+    for (const s of grid) {
+      const key = Math.floor((s.period - 1) / per)
+      const b = byKey.get(key)
+      if (b) {
+        b.endSec = Math.max(b.endSec, s.endSec)
+        b.shiftIndices.push(s.index)
+        if (!b.periods.includes(s.period)) b.periods.push(s.period)
+      } else {
+        byKey.set(key, {
+          key,
+          startSec: s.startSec,
+          endSec: s.endSec,
+          shiftIndices: [s.index],
+          periods: [s.period],
+        })
+      }
+    }
+    return [...byKey.values()].sort((a, b) => a.key - b.key)
+  }
+
+  /*
+   * A shorter stint: blocks of `want` shifts laid out inside each period,
+   * never across the interval.
+   *
+   * A remainder too short to stand on its own is folded into the block before
+   * it rather than left as a stint of its own. That is the whole point of the
+   * rule — handing a child the gloves for the last five minutes of a half is
+   * not long enough to be worth anything, and it is exactly where a naive
+   * division would put them.
+   */
+  const out: KeeperBlock[] = []
+  const stints = keeperStintShifts(rules)
+  let key = 0
+  for (let period = 1; period <= rules.periodCount; period++) {
+    const inPeriod = grid.filter((s) => s.period === period)
+    let i = 0
+    let n = 0
+    while (i < inPeriod.length) {
+      const take = stints[n++] ?? inPeriod.length - i
+      const chunk = inPeriod.slice(i, i + take)
+      const first = chunk[0]
+      const last = chunk[chunk.length - 1]
+      if (!first || !last) break
+      out.push({
+        key: key++,
+        startSec: first.startSec,
+        endSec: last.endSec,
+        shiftIndices: chunk.map((c) => c.index),
+        periods: [period],
       })
+      i += take
     }
   }
-  return [...byKey.values()].sort((a, b) => a.key - b.key)
+  return out
 }
 
 // ---------------------------------------------------------------- scoring
@@ -636,6 +727,15 @@ interface RepairArgs {
   target: Map<ID, number>
   /** False when the goal is an ordinary position and counts like the rest. */
   outfieldOnly: boolean
+  /**
+   * Whether the cleanup passes may reassign the goal. Only when the gloves
+   * change every shift: any longer and the keeper is serving a contiguous
+   * block, and moving one shift out of the middle of it would hand somebody
+   * the gloves for a single block.
+   */
+  goalMovable: boolean
+  /** Most shifts in a row anyone should play. */
+  maxRun: number
   startingCredit?: Map<ID, number>
 }
 
@@ -689,11 +789,14 @@ function repair(a: RepairArgs): void {
       const entries = Object.entries(shift.assignments)
       if (entries.some(([, pid]) => pid === under.id)) continue
 
+      const cap = under.maxConsecutiveShifts ?? a.maxRun
+      if (runLengthAt(a.shifts, i, under.id) > cap) continue
+
       const found = entries.find(([slotId, pid]) => {
         if (pid !== over.id) return false
-        // A keeper held for a whole block is not repair's to move; an ordinary
-        // one is, provided whoever takes the gloves is willing.
-        if (a.outfieldOnly && slotId === gkSlotId) return false
+        // A keeper serving a block is not repair's to move; one that changes
+        // every shift is, provided whoever takes the gloves is willing.
+        if (!a.goalMovable && slotId === gkSlotId) return false
         if (!mayPlay(under, slotId)) return false
         return !a.pins.some((p) => p.shiftIndex === i && p.slotId === slotId)
       })
@@ -752,6 +855,118 @@ function repair(a: RepairArgs): void {
       }
     }
     if (!swapped) return
+  }
+}
+
+/**
+ * Break up runs of consecutive shifts on the field.
+ *
+ * The cap is a tier in the scoring pass, but it only governs outfield slots:
+ * a keeper's block is laid out first and knows nothing of what the child was
+ * doing beforehand, so three shifts outfield followed by a two-shift stint in
+ * goal is five in a row. Repair can stitch a long run together too. This takes
+ * one shift out of the middle of an over-long run and gives it to somebody on
+ * the bench, which is the same trade the other smoothing pass makes.
+ */
+function smoothLongRuns(a: RepairArgs): void {
+  const gkSlotId = a.formation.slots.find((sl) => sl.requiredRole === 'GK')?.id
+  const slotById = new Map(a.formation.slots.map((sl) => [sl.id, sl]))
+
+  const universallyAvoided = new Set<PositionGroup>()
+  for (const slot of a.formation.slots) {
+    if (a.roster.every((p) => p.avoidGroups.includes(slot.group))) {
+      universallyAvoided.add(slot.group)
+    }
+  }
+  const mayPlay = (p: Player, slotId: SlotId): boolean => {
+    const slot = slotById.get(slotId)
+    if (!slot) return false
+    if (slot.requiredRole === 'GK' && p.gk === 'never') return false
+    if (!p.avoidGroups.includes(slot.group)) return true
+    return universallyAvoided.has(slot.group)
+  }
+  const onAt = (i: number): Set<ID> =>
+    new Set(Object.values(a.shifts[i]?.assignments ?? {}))
+
+  for (let pass = 0; pass < 40; pass++) {
+    const assigned = totalAssigned(
+      a.shifts,
+      a.grid,
+      a.formation,
+      a.startingCredit ? a.from : 0,
+      a.startingCredit,
+      a.outfieldOnly,
+    )
+    const devOf = (id: ID): number =>
+      (assigned.get(id) ?? 0) - (a.target.get(id) ?? 0)
+    let worst = 0
+    for (const p of a.roster) worst = Math.max(worst, Math.abs(devOf(p.id)))
+
+    // Where each player's current run of shifts began.
+    const runStart = new Map<ID, number>()
+    let changed = false
+
+    scan: for (let i = 0; i < a.shifts.length; i++) {
+      const on = onAt(i)
+      for (const p of a.roster) {
+        if (!on.has(p.id)) {
+          runStart.delete(p.id)
+          continue
+        }
+        if (!runStart.has(p.id)) runStart.set(p.id, i)
+      }
+      if (i < a.from) continue
+
+      const slice = a.grid[i]
+      const shift = a.shifts[i]
+      if (!slice || !shift) continue
+      const d = slice.endSec - slice.startSec
+      const bound = Math.max(worst, d)
+
+      const overrun = a.roster.find((p) => {
+        const start = runStart.get(p.id)
+        if (start === undefined) return false
+        const cap = p.maxConsecutiveShifts ?? a.maxRun
+        return i - start + 1 > cap
+      })
+      if (!overrun) continue
+      if (Math.abs(devOf(overrun.id) - d) > bound) continue
+
+      const slotId = Object.entries(shift.assignments).find(
+        ([, pid]) => pid === overrun.id,
+      )?.[0]
+      if (!slotId) continue
+      if (!a.goalMovable && slotId === gkSlotId) continue
+      if (a.pins.some((pin) => pin.shiftIndex === i && pin.slotId === slotId)) continue
+
+      const eligible = eligibleDuring(a.windows, slice)
+      const before = i > 0 ? onAt(i - 1) : null
+      const after = i + 1 < a.shifts.length ? onAt(i + 1) : null
+
+      const replacement = a.roster.find((y) => {
+        if (y.id === overrun.id) return false
+        if (on.has(y.id)) return false
+        if (!eligible.has(y.id)) return false
+        if (!mayPlay(y, slotId)) return false
+        // Do not simply move the problem: y must not already be mid-run, and
+        // taking the other player off must not strand them on the bench.
+        if (before?.has(y.id) && after?.has(y.id)) return false
+        if (Math.abs(devOf(y.id) + d) > bound) return false
+        const others = new Set(
+          Object.entries(shift.assignments)
+            .filter(([other]) => other !== slotId)
+            .map(([, pid]) => pid),
+        )
+        return !breaksKeepApart(y.id, others, a.pairings)
+      })
+      if (!replacement) continue
+
+      shift.assignments[slotId] = replacement.id
+      changed = true
+      break scan
+    }
+
+    if (!changed) return
   }
 }
 
@@ -821,15 +1036,24 @@ function smoothBenchRuns(a: RepairArgs): void {
       const nextOn = i + 1 < a.shifts.length ? onAt(i + 1) : null
       const eligible = eligibleDuring(a.windows, slice)
 
-      const stranded = a.roster.filter(
+      const waiting = a.roster.filter(
         (p) => !prevOn.has(p.id) && !nowOn.has(p.id) && eligible.has(p.id),
       )
+      // Rescuing someone from a second shift on the bench should not hand them
+      // an over-long run instead. Whoever can be brought on without breaking
+      // the cap goes first; the others are a fallback, because a second shift
+      // waiting is the complaint a child actually makes.
+      const withinCap = waiting.filter(
+        (p) =>
+          runLengthAt(a.shifts, i, p.id) <= (p.maxConsecutiveShifts ?? a.maxRun),
+      )
+      const stranded = [...withinCap, ...waiting.filter((p) => !withinCap.includes(p))]
 
       for (const x of stranded) {
         if (Math.abs(devOf(x.id) + d) > bound) continue
 
         const entry = Object.entries(shift.assignments).find(([slotId, pid]) => {
-          if (a.outfieldOnly && slotId === gkSlotId) return false
+          if (!a.goalMovable && slotId === gkSlotId) return false
           if (!prevOn.has(pid)) return false // would only move the wait around
           if (nextOn && !nextOn.has(pid)) return false // would strand them instead
           if (a.pins.some((pin) => pin.shiftIndex === i && pin.slotId === slotId)) {
@@ -891,6 +1115,20 @@ function applyShiftAccounting(
     consecutive.set(p.id, on ? (consecutive.get(p.id) ?? 0) + 1 : 0)
     benchStreak.set(p.id, on ? 0 : (benchStreak.get(p.id) ?? 0) + 1)
   }
+}
+
+/**
+ * How many shifts in a row a player would be on for, counting a shift they are
+ * about to be given. The cleanup passes use it so that fixing one problem does
+ * not quietly create the other one.
+ */
+function runLengthAt(shifts: PlannedShift[], at: number, id: ID): number {
+  const onAt = (i: number): boolean =>
+    Object.values(shifts[i]?.assignments ?? {}).includes(id)
+  let n = 1
+  for (let k = at - 1; k >= 0 && onAt(k); k--) n++
+  for (let k = at + 1; k < shifts.length && onAt(k); k++) n++
+  return n
 }
 
 function totalAssigned(

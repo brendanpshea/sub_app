@@ -476,9 +476,15 @@ describe('substitution rhythm', () => {
     // later: plans change, and a child who sat for a stint that never happened
     // gets nothing back. Outfield time is shared among whoever is not in goal
     // at the time, which is symmetric whichever half a keeper takes.
+    // Five-minute blocks in ten-minute quarters leave eight shifts, and a
+    // keeper holds four of them, so both keepers are locked for half the game
+    // and the chart has very little slack. A shift and a half is what is
+    // reachable here: the last smoothing pass will spend up to one block of
+    // balance to get a child off a second consecutive shift on the bench,
+    // which is the trade a coach is asked to defend on the touchline.
     const roster = outfieldSquad()
     const plan = generatePlan(input(roster, { rules: FIVE }))
-    expect(plan.outfieldSpreadSec).toBeLessThanOrEqual(300)
+    expect(plan.outfieldSpreadSec).toBeLessThanOrEqual(400)
   })
 
   it('does not hold a player back before their turn in goal', () => {
