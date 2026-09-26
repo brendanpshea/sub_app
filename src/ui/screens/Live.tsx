@@ -25,7 +25,12 @@ import {
   type LiveState,
   type SubPlan,
 } from '@/domain/live'
-import { generatePlan, goalIsOrdinaryPosition, replanFrom } from '@/domain/planner'
+import {
+  creditAtShiftStart,
+  generatePlan,
+  goalIsOrdinaryPosition,
+  replanFrom,
+} from '@/domain/planner'
 import type { Formation, GameEventBody, Pin, Player, SlotId } from '@/domain/types'
 import { displayName, fullName } from '@/domain/types'
 import Pitch, { type SlotFill } from '../components/Pitch'
@@ -132,6 +137,16 @@ export default function Live() {
   const shiftIdx =
     s.period > 0 ? currentShiftIndex(grid, rules, s.period, s.periodElapsedSec) : -1
   const currentShift = shiftIdx >= 0 ? plan?.shifts[shiftIdx] : undefined
+
+  /** Seconds of a shift already played: all of it once its period is over. */
+  const playedOfShift = (idx: number): number => {
+    const g = grid[idx]
+    if (!g || g.period > s.period) return 0
+    const dur = g.endSec - g.startSec
+    if (g.period < s.period || s.status === 'break' || s.status === 'final') return dur
+    const rel = g.startSec - (g.period - 1) * periodSec
+    return Math.min(dur, Math.max(0, s.periodElapsedSec - rel))
+  }
 
   // Deliberately never crosses into the next period. Bringing a change forward
   // across the interval would schedule players meant for after the break, and
@@ -281,7 +296,10 @@ export default function Live() {
 
     // Once the game is underway the minutes already played are the truth; before
     // kick-off there are none and the planner should count the plan instead.
+    // The truth is up to now, and the plan picks up after the edited shift, so
+    // the shifts in between are counted as planned.
     const started = s!.period > 0
+    const nowIdx = s!.status === 'break' && nextPeriodIdx >= 0 ? nextPeriodIdx : shiftIdx
     const result = generatePlan({
       rules: game.rules,
       formation,
@@ -292,7 +310,18 @@ export default function Live() {
       seed: plan.seed,
       existing: shifts,
       fromShiftIndex: shiftIndex + 1,
-      ...(started ? { startingCredit: outPlayed } : {}),
+      ...(started
+        ? {
+            startingCredit: creditAtShiftStart(
+              game.rules,
+              formation,
+              shifts,
+              outPlayed,
+              { shiftIndex: nowIdx, elapsedSec: playedOfShift(nowIdx) },
+              shiftIndex + 1,
+            ),
+          }
+        : {}),
     })
     await savePlan(gameId, result.shifts, result.seed, pins)
   }
@@ -427,9 +456,19 @@ export default function Live() {
     )
   }
 
+  /** Where the clock is, which the minutes in `outPlayed` are measured up to. */
+  const clockAt = () => {
+    const idx = Math.max(0, shiftIdx)
+    return { shiftIndex: idx, elapsedSec: playedOfShift(idx) }
+  }
+
   /** Make the plan match reality from this shift onward. */
-  async function replanRemainder(fromIdx: number, onField: Record<SlotId, string>) {
-    if (!plan || !game) return
+  async function replanRemainder(
+    fromIdx: number,
+    onField: Record<SlotId, string>,
+    existing = plan?.shifts,
+  ) {
+    if (!plan || !game || !existing) return
     const result = replanFrom(
       {
         rules: game.rules,
@@ -443,7 +482,8 @@ export default function Live() {
       Math.max(0, fromIdx),
       outPlayed,
       onField,
-      plan.shifts,
+      existing,
+      clockAt(),
     )
     await savePlan(
       gameId,
@@ -462,15 +502,24 @@ export default function Live() {
       // Brought forward from the next shift. The pitch now matches shift N+1
       // while the plan's current shift is still N — left alone, the sheet
       // sees that mismatch and immediately proposes swapping everyone back.
-      // Hold what is on the pitch as the current shift and re-plan from there.
-      await replanRemainder(shiftIdx, applyDiff(s!.onField, diff))
+      // So what is on the pitch is written into both, and only what comes
+      // after is re-planned. Re-deciding N+1 as well would treat this lineup
+      // as a block early, see everyone just benched as about to sit two in a
+      // row, and bring them straight back on when N+1 starts.
+      const field = applyDiff(s!.onField, diff)
+      const held = plan
+        ? plan.shifts.map((sh, i) =>
+            i === shiftIdx || i === targetIndex ? { ...sh, assignments: { ...field } } : sh,
+          )
+        : undefined
+      await replanRemainder(targetIndex + 1, {}, held)
       setToast('Plan adjusted')
       window.setTimeout(() => setToast(null), 2200)
       return
     }
 
     const drift = s!.periodElapsedSec - plannedRelSec
-    await afterSub(targetIndex, drift)
+    await afterSub(targetIndex, drift, applyDiff(s!.onField, diff))
   }
 
   /**
@@ -478,9 +527,15 @@ export default function Live() {
    * normal. Past a minute either way the remainder is quietly rebalanced rather
    * than left to drift.
    */
-  async function afterSub(targetIndex: number, drift: number) {
+  async function afterSub(
+    targetIndex: number,
+    drift: number,
+    field: Record<SlotId, string>,
+  ) {
     if (Math.abs(drift) > 60) {
-      await replanRemainder(targetIndex + 1, {})
+      // From the shift just made rather than the next one, so the rest of it
+      // is counted for whoever is now playing it.
+      await replanRemainder(targetIndex, field)
       setToast('Plan adjusted')
       window.setTimeout(() => setToast(null), 2200)
     }
@@ -583,6 +638,7 @@ export default function Live() {
         outPlayed,
         field,
         plan.shifts,
+        clockAt(),
       )
       await savePlan(
         gameId,

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { generatePlan, replanFrom, type PlannerInput } from './planner'
+import {
+  creditAtShiftStart,
+  generatePlan,
+  replanFrom,
+  type PlannerInput,
+} from './planner'
 import { BUILT_IN_FORMATIONS } from './formations'
 import { buildShiftGrid } from './fairness'
 import {
@@ -362,6 +367,51 @@ describe('replanFrom', () => {
       .map((p) => second.filter((s) => onField(s).includes(p.id)).length)
     // Even credit in means an even split of what is left.
     expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1)
+  })
+})
+
+describe('creditAtShiftStart', () => {
+  // Default rules keep a keeper for a whole half, so goal time is its own
+  // ledger and the keeper earns no outfield credit.
+  const roster = squad(10)
+  const plan = generatePlan(input(roster))
+  const played = new Map(roster.map((p) => [p.id, 300]))
+  const outfield = (i: number) =>
+    FORMATION.slots
+      .filter((sl) => sl.requiredRole !== 'GK')
+      .map((sl) => plan.shifts[i]!.assignments[sl.id]!)
+
+  it('takes back the part of the current shift already played by whoever stays on', () => {
+    // The planner credits the shift it re-plans from in full. Handing it
+    // minutes-up-to-now instead counted the first 150s twice for everyone on
+    // the pitch, and the player just subbed off looked owed that much.
+    const credit = creditAtShiftStart(
+      RULES,
+      FORMATION,
+      plan.shifts,
+      played,
+      { shiftIndex: 1, elapsedSec: 150 },
+      1,
+    )
+    const on = new Set(outfield(1))
+    for (const p of roster) {
+      expect(credit.get(p.id)).toBe(on.has(p.id) ? 150 : 300)
+    }
+  })
+
+  it('counts the rest of the current shift when re-planning from the next', () => {
+    const credit = creditAtShiftStart(
+      RULES,
+      FORMATION,
+      plan.shifts,
+      played,
+      { shiftIndex: 1, elapsedSec: 150 },
+      2,
+    )
+    const on = new Set(outfield(1))
+    for (const p of roster) {
+      expect(credit.get(p.id)).toBe(on.has(p.id) ? 350 : 300)
+    }
   })
 })
 

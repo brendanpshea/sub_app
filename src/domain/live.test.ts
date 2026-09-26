@@ -8,9 +8,16 @@ import {
   planFieldChange,
   secondsUntilShift,
 } from './live'
+import { generatePlan, replanFrom } from './planner'
 import { BUILT_IN_FORMATIONS } from './formations'
 import { buildShiftGrid } from './fairness'
-import { DEFAULT_RULES, type GameEvent, type GameEventBody } from './types'
+import {
+  DEFAULT_RULES,
+  type GameEvent,
+  type GameEventBody,
+  type Player,
+  type SlotId,
+} from './types'
 
 const FORMATION = BUILT_IN_FORMATIONS[0]! // 2-3-1: gk, lb, rb, lm, cm, rm, st
 const RULES = { ...DEFAULT_RULES }
@@ -582,5 +589,68 @@ describe('applyDiff', () => {
     const after = applyDiff(FIELD, diffToPlan(FIELD, target, { slots }))
     expect(after['st']).toBeUndefined()
     expect(Object.keys(after)).toHaveLength(6)
+  })
+})
+
+describe('a substitution made before its planned time', () => {
+  // Coaches sub at stoppages, which rarely land on the minute. A change brought
+  // forward from the next shift used to be followed by another prompt the
+  // moment that shift began, bringing back the players just sent off.
+  const roster: Player[] = Array.from({ length: 9 }, (_, i) => ({
+    id: `p${i}`,
+    teamId: 't',
+    firstName: `p${i}`,
+    active: true,
+    gk: 'willing',
+    preferredGroups: [],
+    avoidGroups: [],
+    createdAt: 0,
+  }))
+  const input = {
+    rules: RULES,
+    formation: FORMATION,
+    roster,
+    attendance: roster.map((p) => ({ playerId: p.id, status: 'available' as const })),
+    seed: 7,
+  }
+  const opts = { slots: FORMATION.slots, ignoreKeeper: true }
+
+  function eventsFor(from: Record<SlotId, string>, to: Record<SlotId, string>): GameEventBody[] {
+    const d = diffToPlan(from, to, opts)
+    return [
+      ...d.swaps.map((w) => ({ type: 'OFF' as const, playerId: w.off, slotId: w.offSlot })),
+      ...d.swaps.map((w) => ({ type: 'ON' as const, playerId: w.on, slotId: w.onSlot })),
+    ]
+  }
+
+  it('is not asked for again when its shift starts', () => {
+    let shifts = generatePlan(input).shifts
+    const bodies: [number, GameEventBody][] = [[0, { type: 'PERIOD_START', period: 1 }]]
+    for (const [slotId, playerId] of Object.entries(shifts[0]!.assignments)) {
+      bodies.push([0, { type: 'ON', playerId, slotId }])
+    }
+
+    for (const idx of [0, 1]) {
+      const early = GRID[idx + 1]!.startSec - 30
+      const s = derive(log(...bodies), early)
+      const field = applyDiff(s.onField, diffToPlan(s.onField, shifts[idx + 1]!.assignments, opts))
+      for (const b of eventsFor(s.onField, shifts[idx + 1]!.assignments)) bodies.push([early, b])
+
+      // What the live screen does: the new lineup stands for the rest of this
+      // shift and the next, and only what comes after is re-planned.
+      const held = shifts.map((sh, i) =>
+        i === idx || i === idx + 1 ? { ...sh, assignments: { ...field } } : sh,
+      )
+      const played = new Map(
+        [...s.playedSec].map(([id, sec]) => [id, sec - (s.gkSec.get(id) ?? 0)]),
+      )
+      shifts = replanFrom(input, idx + 2, played, {}, held, {
+        shiftIndex: idx,
+        elapsedSec: early - GRID[idx]!.startSec,
+      }).shifts
+
+      const then = derive(log(...bodies), GRID[idx + 1]!.startSec + 1)
+      expect(isSubDue(diffToPlan(then.onField, shifts[idx + 1]!.assignments, opts))).toBe(false)
+    }
   })
 })

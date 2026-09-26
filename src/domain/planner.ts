@@ -1215,6 +1215,15 @@ export function replanFrom(
   actualCredit: Map<ID, number>,
   currentOnField: Record<SlotId, ID>,
   existing: PlannedShift[],
+  /**
+   * Where the game clock is, which `actualCredit` is measured up to. Defaults to
+   * the start of `fromShiftIndex`. Shifts between here and `fromShiftIndex` are
+   * counted as `existing` has them.
+   */
+  now: { shiftIndex: number; elapsedSec: number } = {
+    shiftIndex: fromShiftIndex,
+    elapsedSec: 0,
+  },
 ): PlanResult {
   // Hold the players who are on the pitch right now; only the future is negotiable.
   const holdPins: Pin[] = Object.entries(currentOnField).map(([slotId, playerId]) => ({
@@ -1223,9 +1232,23 @@ export function replanFrom(
     playerId,
   }))
 
+  const held =
+    holdPins.length > 0
+      ? existing.map((sh, i) =>
+          i === fromShiftIndex ? { ...sh, assignments: { ...currentOnField } } : sh,
+        )
+      : existing
+
   return generatePlan({
     ...input,
-    startingCredit: actualCredit,
+    startingCredit: creditAtShiftStart(
+      input.rules,
+      input.formation,
+      held,
+      actualCredit,
+      now,
+      fromShiftIndex,
+    ),
     existing,
     pins: [
       ...(input.pins ?? []).filter((p) => p.shiftIndex > fromShiftIndex),
@@ -1233,4 +1256,49 @@ export function replanFrom(
     ],
     fromShiftIndex,
   })
+}
+
+/**
+ * Minutes played as of the start of shift `fromIndex` — what `startingCredit`
+ * means to the planner — from minutes actually played up to now.
+ *
+ * The two differ whenever a re-plan happens partway through a shift, which is
+ * most of them: a substitution rarely lands exactly on the minute. The planner
+ * credits shift `fromIndex` in full to whoever it puts there, so handing it
+ * minutes-up-to-now counts the part already played twice for everyone who
+ * stays on, and a player just sent to the bench looks owed exactly that much
+ * and is brought straight back. Replanning from a later shift has the mirror
+ * problem: the rest of the current shift is never counted at all.
+ *
+ * `shifts` must hold who is actually on for the current shift, and the plan for
+ * the ones between it and `fromIndex`.
+ */
+export function creditAtShiftStart(
+  rules: GameRules,
+  formation: Formation,
+  shifts: PlannedShift[],
+  actual: Map<ID, number>,
+  now: { shiftIndex: number; elapsedSec: number },
+  fromIndex: number,
+): Map<ID, number> {
+  const grid = buildShiftGrid(rules)
+  const goalOrdinary = goalIsOrdinaryPosition(rules)
+  const out = new Map(actual)
+  const add = (i: number, sec: number): void => {
+    for (const slot of formation.slots) {
+      if (!goalOrdinary && slot.requiredRole === 'GK') continue
+      const pid = shifts[i]?.assignments[slot.id]
+      if (pid) out.set(pid, (out.get(pid) ?? 0) + sec)
+    }
+  }
+
+  const cur = grid[now.shiftIndex]
+  if (!cur || fromIndex < now.shiftIndex) return out
+  const elapsed = Math.min(Math.max(0, now.elapsedSec), cur.endSec - cur.startSec)
+  add(now.shiftIndex, -elapsed)
+  for (let i = now.shiftIndex; i < fromIndex; i++) {
+    const g = grid[i]
+    if (g) add(i, g.endSec - g.startSec)
+  }
+  return out
 }
