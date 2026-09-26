@@ -574,23 +574,26 @@ export default function Live() {
       return
     }
 
-    // Past halfway through a shift, a change made on the pitch is the next
-    // scheduled one brought forward to this stoppage, and is held through that
-    // shift just as one made from the sub sheet is. Re-deciding the next shift
-    // would see whoever was just benched as about to sit two in a row and ask
-    // for them back the moment it starts.
-    const cur = grid[shiftIdx]
+    // A change that is part of the next scheduled one — the player coming off
+    // is due off then and the one going on is due on — is that change brought
+    // forward to this stoppage. The next shift is kept as planned, so any of
+    // its swaps not yet made still come up when it starts, and only what comes
+    // after is re-planned. Re-deciding the next shift would see whoever was
+    // just benched as about to sit two in a row and ask for them back the
+    // moment it starts. Anything else, such as an injury, is re-planned from
+    // now, so the next rotation still happens on time.
+    const next = plan?.shifts[shiftIdx + 1]
+    const nextIds = new Set(Object.values(next?.assignments ?? {}))
+    const leaving = s!.onField[slotId]
     const bringsForward =
-      !!cur &&
-      !!plan &&
+      !!next &&
       (s!.status === 'running' || s!.status === 'paused') &&
-      plan.shifts[shiftIdx + 1]?.period === s!.period &&
-      playedOfShift(shiftIdx) * 2 >= cur.endSec - cur.startSec
+      next.period === s!.period &&
+      nextIds.has(playerId) &&
+      (!leaving || !nextIds.has(leaving))
     if (bringsForward) {
       const held = plan!.shifts.map((sh, i) =>
-        i === shiftIdx || i === shiftIdx + 1
-          ? { ...sh, assignments: { ...change.nextField } }
-          : sh,
+        i === shiftIdx ? { ...sh, assignments: { ...change.nextField } } : sh,
       )
       await replanRemainder(shiftIdx + 2, {}, held)
     } else {
