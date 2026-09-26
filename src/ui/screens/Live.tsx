@@ -574,7 +574,28 @@ export default function Live() {
       return
     }
 
-    await replanRemainder(Math.max(0, shiftIdx), change.nextField)
+    // Past halfway through a shift, a change made on the pitch is the next
+    // scheduled one brought forward to this stoppage, and is held through that
+    // shift just as one made from the sub sheet is. Re-deciding the next shift
+    // would see whoever was just benched as about to sit two in a row and ask
+    // for them back the moment it starts.
+    const cur = grid[shiftIdx]
+    const bringsForward =
+      !!cur &&
+      !!plan &&
+      (s!.status === 'running' || s!.status === 'paused') &&
+      plan.shifts[shiftIdx + 1]?.period === s!.period &&
+      playedOfShift(shiftIdx) * 2 >= cur.endSec - cur.startSec
+    if (bringsForward) {
+      const held = plan!.shifts.map((sh, i) =>
+        i === shiftIdx || i === shiftIdx + 1
+          ? { ...sh, assignments: { ...change.nextField } }
+          : sh,
+      )
+      await replanRemainder(shiftIdx + 2, {}, held)
+    } else {
+      await replanRemainder(Math.max(0, shiftIdx), change.nextField)
+    }
     setToast(slotId === gkSlotId ? `${show(playerId)} in goal` : 'Plan adjusted')
     window.setTimeout(() => setToast(null), 2200)
   }
