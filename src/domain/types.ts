@@ -38,6 +38,13 @@ export interface GameRules {
    */
   gkMinMinutes?: number
   maxGkPeriodsPerPlayer: number
+  /**
+   * Shortest time on, in minutes, for a player brought on mid-period. A sub
+   * made late at a stoppage would otherwise leave them only a minute or two
+   * before the next change takes them off again. Defaults to two-thirds of a
+   * shift when unset; 0 turns it off.
+   */
+  minStintMinutes?: number
   maxConsecutiveShifts: number
   seasonCarryWeight: number //    0..1 — how hard last week's debt pulls
   balance: number //              0 = strictly equal, 1 = loose

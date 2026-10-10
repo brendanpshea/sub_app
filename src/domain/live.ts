@@ -47,6 +47,13 @@ export interface LiveState {
    * of outfield play, since whoever is in goal is not competing for it.
    */
   keeperSpans: KeeperSpan[]
+  /**
+   * Game-clock second each player on the field came on. A change of position is
+   * not a break, so it does not reset this; only going to the bench does.
+   */
+  onSinceSec: Map<ID, number>
+  /** Game-clock second each player on the bench last came off. */
+  offSinceSec: Map<ID, number>
   goals: Map<ID, number>
   assists: Map<ID, number>
   saves: Map<ID, number>
@@ -89,6 +96,8 @@ export function deriveLive(
     secByGroup: new Map(),
     gkPeriods: new Map(),
     keeperSpans: [],
+    onSinceSec: new Map(),
+    offSinceSec: new Map(),
     goals: new Map(),
     assists: new Map(),
     saves: new Map(),
@@ -182,6 +191,8 @@ export function deriveLive(
         break
 
       case 'ON':
+        if (!open.has(e.body.playerId)) state.onSinceSec.set(e.body.playerId, tSec)
+        state.offSinceSec.delete(e.body.playerId)
         closeStint(e.body.playerId, tSec)
         open.set(e.body.playerId, { slotId: e.body.slotId, sinceSec: tSec })
         state.onField[e.body.slotId] = e.body.playerId
@@ -194,6 +205,10 @@ export function deriveLive(
         break
 
       case 'OFF':
+        if (open.has(e.body.playerId)) {
+          state.onSinceSec.delete(e.body.playerId)
+          state.offSinceSec.set(e.body.playerId, tSec)
+        }
         closeStint(e.body.playerId, tSec)
         if (e.body.slotId === gkSlotId) leaveGoal(tSec)
         if (state.onField[e.body.slotId] === e.body.playerId) {

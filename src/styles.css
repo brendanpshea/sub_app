@@ -521,7 +521,7 @@ textarea {
   position: absolute;
   transform: translate(-50%, -50%);
   min-width: 62px;
-  max-width: 104px;
+  max-width: 116px;
   padding: 0.34rem 0.4rem;
   border: 0;
   border-radius: 8px;
@@ -1179,7 +1179,15 @@ table.plan .qsep {
   font-weight: 700;
   line-height: 1.15;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   color: #2f6f4f;
+}
+
+/* Time since their last rest, beside the total. Quieter than the total, which
+   carries the verdict, but there for "who has been on longest?". */
+.slot .mins .stint {
+  font-weight: 600;
+  color: #4b5a52;
 }
 
 .slot .mins.behind {
@@ -1259,6 +1267,10 @@ table.plan .qsep {
   font-weight: 600;
   color: var(--ink-3);
   font-variant-numeric: tabular-nums;
+}
+
+.bchip2 em .stint {
+  font-weight: 500;
 }
 
 .bchip2.deck {

@@ -4,6 +4,7 @@ import { buildShiftGrid } from '@/domain/fairness'
 import {
   goalIsOrdinaryPosition,
   keeperStintShifts,
+  minStintSec,
   shiftLengthSec,
   shiftsPerPeriod,
 } from '@/domain/planner'
@@ -156,6 +157,20 @@ export default function MatchRules({
             max={15}
             onChange={(v) => onChange({ shiftMinutes: v })}
             hint={`${perPeriod} shifts per period, about ${shiftLen.toFixed(1)} min each.`}
+          />
+          <Stepper
+            label="Shortest time on after a sub (minutes)"
+            value={Math.round(minStintSec(rules) / 60)}
+            min={0}
+            max={15}
+            onChange={(v) => onChange({ minStintMinutes: v })}
+            hint={
+              minStintSec(rules) > 0
+                ? `Someone brought on late in a shift stays on for at least ${Math.round(
+                    minStintSec(rules) / 60,
+                  )} min, rather than coming straight back off at the next change.`
+                : 'Off: the next change goes ahead as planned, however late the last one was.'
+            }
           />
         </div>
       </div>

@@ -29,6 +29,7 @@ import {
   creditAtShiftStart,
   generatePlan,
   goalIsOrdinaryPosition,
+  holdShortStints,
   replanFrom,
 } from '@/domain/planner'
 import type { Formation, GameEventBody, Pin, Player, SlotId } from '@/domain/types'
@@ -68,7 +69,6 @@ export default function Live() {
     slotId: SlotId
     playerId?: string
   } | null>(null)
-  const [snoozeUntilSec, setSnoozeUntilSec] = useState(0)
   const [whoIsHere, setWhoIsHere] = useState(false)
   const [manualSub, setManualSub] = useState(false)
   const [namePick, setNamePick] = useState<
@@ -173,8 +173,10 @@ export default function Live() {
   const subOpts = goalOrdinary ? lineupOpts : { ...lineupOpts, ignoreKeeper: true }
 
   const sub = diffToPlan(s.onField, currentShift?.assignments ?? {}, subOpts)
+  // Suggestions are offered, never pushed: a coach who mostly picks their own
+  // changes found a sheet that opened itself at every shift more in the way
+  // than helpful. The banner says a change is due; the sheet waits to be asked.
   const due = s.status === 'running' && isSubDue(sub) && !!currentShift
-  const showSubSheet = due && s.cumulativeSec >= snoozeUntilSec
 
   // What a "make subs" tap would do: whatever is already due, otherwise the
   // next scheduled change brought forward to this stoppage.
@@ -187,19 +189,7 @@ export default function Live() {
       : nextShift && earlySub && isSubDue(earlySub)
         ? { shift: nextShift, diff: earlySub, index: shiftIdx + 1 }
         : null
-  const activeSub = showSubSheet || manualSub ? nextChange : null
-
-  /** Who the next change brings on. Known as soon as there is a plan, not
-   *  only in the last minute, so a coach can warn them in good time. */
-  const comingOn = new Set<string>(
-    nextChange
-      ? [
-          ...nextChange.diff.swaps.map((w) => w.on),
-          ...nextChange.diff.onOnly.map((o) => o.playerId),
-          ...(nextChange.diff.keeper ? [nextChange.diff.keeper.on] : []),
-        ]
-      : [],
-  )
+  const activeSub = manualSub ? nextChange : null
 
   const untilNext = nextShift
     ? secondsUntilShift(nextShift, rules, s.periodElapsedSec)
@@ -236,6 +226,23 @@ export default function Live() {
     if (owed > 180) return 'short'
     if (owed > 60) return 'behind'
     return 'ok'
+  }
+
+  /** Time on since last coming on: how long since this player had a rest. */
+  const onFor = (id: string): number => {
+    const since = s.onSinceSec.get(id)
+    return since === undefined ? 0 : Math.max(0, s.cumulativeSec - since)
+  }
+  /**
+   * Time on the bench since last coming off. Someone yet to play has waited
+   * since kick-off, or since they arrived.
+   */
+  const benchFor = (id: string): number => {
+    const since =
+      s.offSinceSec.get(id) ??
+      attendance.find((a) => a.playerId === id)?.availableFromSec ??
+      0
+    return Math.max(0, s.cumulativeSec - since)
   }
 
   const onFieldIds = new Set(Object.values(s.onField))
@@ -462,11 +469,25 @@ export default function Live() {
     return { shiftIndex: idx, elapsedSec: playedOfShift(idx) }
   }
 
+  /**
+   * How long each player in `field` has been on since they last came on, with
+   * anyone not on the pitch in this render — just brought on — at 0.
+   */
+  const onForIn = (field: Record<SlotId, string>) =>
+    new Map(
+      Object.values(field).map((id) => {
+        const since = s!.onSinceSec.get(id)
+        return [id, since === undefined ? 0 : Math.max(0, s!.cumulativeSec - since)]
+      }),
+    )
+
   /** Make the plan match reality from this shift onward. */
   async function replanRemainder(
     fromIdx: number,
     onField: Record<SlotId, string>,
     existing = plan?.shifts,
+    /** Who is on the pitch once this change is made. */
+    pitch: Record<SlotId, string> = onField,
   ) {
     if (!plan || !game || !existing) return
     const result = replanFrom(
@@ -484,6 +505,7 @@ export default function Live() {
       onField,
       existing,
       clockAt(),
+      onForIn(pitch),
     )
     await savePlan(
       gameId,
@@ -496,7 +518,6 @@ export default function Live() {
   async function confirmSub(diff: SubPlan, targetIndex: number, plannedRelSec: number) {
     await appendMany(gameId, eventsForDiff(diff), s!.cumulativeSec)
     setManualSub(false)
-    setSnoozeUntilSec(0)
 
     if (targetIndex > shiftIdx) {
       // Brought forward from the next shift. The pitch now matches shift N+1
@@ -512,7 +533,7 @@ export default function Live() {
             i === shiftIdx || i === targetIndex ? { ...sh, assignments: { ...field } } : sh,
           )
         : undefined
-      await replanRemainder(targetIndex + 1, {}, held)
+      await replanRemainder(targetIndex + 1, {}, held, field)
       setToast('Plan adjusted')
       window.setTimeout(() => setToast(null), 2200)
       return
@@ -532,7 +553,17 @@ export default function Live() {
     drift: number,
     field: Record<SlotId, string>,
   ) {
-    if (Math.abs(drift) > 60) {
+    // A sub on time leaves the plan alone, unless it brought someone on so late
+    // that the next change would have them straight back off.
+    const held = plan?.shifts.map((sh, i) =>
+      i === targetIndex ? { ...sh, assignments: { ...field } } : sh,
+    )
+    const cutShort =
+      !!held &&
+      holdShortStints(rules, formation, held, onForIn(field), clockAt(), targetIndex + 1).some(
+        (pin) => plan?.shifts[pin.shiftIndex]?.assignments[pin.slotId] !== pin.playerId,
+      )
+    if (Math.abs(drift) > 60 || cutShort) {
       // From the shift just made rather than the next one, so the rest of it
       // is counted for whoever is now playing it.
       await replanRemainder(targetIndex, field)
@@ -595,7 +626,7 @@ export default function Live() {
       const held = plan!.shifts.map((sh, i) =>
         i === shiftIdx ? { ...sh, assignments: { ...change.nextField } } : sh,
       )
-      await replanRemainder(shiftIdx + 2, {}, held)
+      await replanRemainder(shiftIdx + 2, {}, held, change.nextField)
     } else {
       await replanRemainder(Math.max(0, shiftIdx), change.nextField)
     }
@@ -642,12 +673,33 @@ export default function Live() {
       }
     }
 
+    // A late arrival goes on the bench. Whatever lineup the coach is looking at
+    // — the starting one, the one for after the break, or the pitch — stands as
+    // it is, and they are worked into the changes after it.
+    const holdIdx =
+      s!.status === 'pre'
+        ? 0
+        : s!.status === 'break' && nextPeriodIdx >= 0
+          ? nextPeriodIdx
+          : Math.max(0, shiftIdx)
+    const holdField =
+      s!.status === 'pre' ? startAssign : s!.status === 'break' ? breakLineup : field
+    const holdClock =
+      s!.status === 'pre' || s!.status === 'break'
+        ? { shiftIndex: holdIdx, elapsedSec: 0 }
+        : clockAt()
+
     const fresh = await db.games.get(gameId)
     if (fresh && plan && roster) {
       const att = reconcileAttendance(fresh.attendance, roster)
       const stillIn = new Set(
         att.filter((a) => a.status !== 'absent').map((a) => a.playerId),
       )
+      // Someone leaving cannot be held in a lineup they are no longer in.
+      const lineup = Object.fromEntries(
+        Object.entries(arriving ? holdField : field).filter(([, pid]) => stillIn.has(pid)),
+      )
+      const fromIdx = arriving ? holdIdx : Math.max(0, shiftIdx)
       const result = replanFrom(
         {
           rules: fresh.rules,
@@ -658,20 +710,21 @@ export default function Live() {
           pins: plan.pins,
           seed: plan.seed,
         },
-        Math.max(0, shiftIdx),
+        fromIdx,
         outPlayed,
-        field,
+        lineup,
         plan.shifts,
-        clockAt(),
+        arriving ? holdClock : clockAt(),
+        s!.status === 'running' || s!.status === 'paused' ? onForIn(field) : undefined,
       )
       await savePlan(
         gameId,
         result.shifts,
         result.seed,
-        plan.pins.filter((p) => p.shiftIndex > shiftIdx),
+        plan.pins.filter((p) => p.shiftIndex > fromIdx),
       )
     }
-    setToast(arriving ? 'Added to the game' : 'Plan adjusted')
+    setToast(arriving ? `${show(playerId)} is on the bench` : 'Plan adjusted')
     window.setTimeout(() => setToast(null), 2200)
   }
   /** One tap. Saves are the keeper's line on the sheet, and they come fast. */
@@ -702,6 +755,7 @@ export default function Live() {
     fill[slotId] = {
       name: displayName(p, available),
       mins: minutes(s.playedSec.get(playerId) ?? 0),
+      stint: mmss(onFor(playerId)),
       tone: toneFor(playerId),
     }
   }
@@ -722,7 +776,7 @@ export default function Live() {
       return { cls: 'period', text: `End of Q${s.period} — tap to end`, action: endPeriod }
     if (s.status === 'paused')
       return { cls: 'paused', text: 'Paused — tap play to resume' }
-    if (showSubSheet) return { cls: 'due', text: 'Sub when play stops' }
+    if (due) return { cls: 'due', text: 'Subs due — tap a position to sub' }
     if (untilNext <= ON_DECK_LEAD_SEC)
       return { cls: 'soon', text: `Next sub in ${mmss(Math.max(0, untilNext))}` }
     return { cls: '', text: `Next sub in ${mmss(Math.max(0, untilNext))}` }
@@ -867,76 +921,19 @@ export default function Live() {
               <div className="bench-row">
                 <span className="lab">Bench</span>
                 {bench.map((p) => (
-                  <span
-                    key={p.id}
-                    className={`bchip2${comingOn.has(p.id) ? ' deck' : ''}`}
-                  >
+                  <span key={p.id} className="bchip2">
                     {displayName(p, available)}
-                    <em>{comingOn.has(p.id) ? 'next on' : minutes(outPlayed.get(p.id) ?? 0)}</em>
+                    <em>
+                      {minutes(outPlayed.get(p.id) ?? 0)}
+                      <span className="stint" title="On the bench for">
+                        {' '}· sat {mmss(benchFor(p.id))}
+                      </span>
+                    </em>
                   </span>
                 ))}
                 {bench.length === 0 ? <span className="dim">Everyone is on</span> : null}
               </div>
             </div>
-
-            {nextChange ? (
-              <div className={`nextsub${untilNext <= ON_DECK_LEAD_SEC ? ' soon' : ''}`}>
-                <div className="nextsub-head">
-                  <span>Next sub</span>
-                  <span className="when">
-                    {nextChange.index === shiftIdx
-                      ? 'due now'
-                      : `in ${mmss(Math.max(0, untilNext))}`}
-                  </span>
-                </div>
-                {nextChange.diff.keeper ? (
-                  <div className="nextsub-row">
-                    <span className="pos GK">GK</span>
-                    <span className="who off">{show(nextChange.diff.keeper.off)}</span>
-                    <span className="arr" aria-hidden="true">
-                      &rarr;
-                    </span>
-                    <span className="who on">{show(nextChange.diff.keeper.on)}</span>
-                  </div>
-                ) : null}
-                {nextChange.diff.swaps.map((sw) => (
-                  <div className="nextsub-row" key={`${sw.off}-${sw.on}`}>
-                    <span className={`pos ${slotGroup(sw.offSlot)}`}>
-                      {slotLabel(sw.offSlot)}
-                    </span>
-                    <span className="who off">{show(sw.off)}</span>
-                    <span className="arr" aria-hidden="true">
-                      &rarr;
-                    </span>
-                    <span className="who on">{show(sw.on)}</span>
-                  </div>
-                ))}
-                {nextChange.diff.offOnly.map((o) => (
-                  <div className="nextsub-row" key={o.playerId}>
-                    <span className={`pos ${slotGroup(o.slotId)}`}>
-                      {slotLabel(o.slotId)}
-                    </span>
-                    <span className="who off">{show(o.playerId)}</span>
-                    <span className="arr" aria-hidden="true">
-                      &rarr;
-                    </span>
-                    <span className="who">bench</span>
-                  </div>
-                ))}
-                {nextChange.diff.onOnly.map((o) => (
-                  <div className="nextsub-row" key={o.playerId}>
-                    <span className={`pos ${slotGroup(o.slotId)}`}>
-                      {slotLabel(o.slotId)}
-                    </span>
-                    <span className="who">bench</span>
-                    <span className="arr" aria-hidden="true">
-                      &rarr;
-                    </span>
-                    <span className="who on">{show(o.playerId)}</span>
-                  </div>
-                ))}
-              </div>
-            ) : null}
 
             <button
               type="button"
@@ -944,7 +941,7 @@ export default function Live() {
               disabled={!nextChange}
               onClick={() => setManualSub(true)}
             >
-              {nextChange ? 'MAKE SUBS' : 'NO SUBS DUE'}
+              {nextChange ? 'SUGGEST SUBS' : 'NO SUBS DUE'}
             </button>
           </>
         )}
@@ -965,7 +962,6 @@ export default function Live() {
               title="Substitution"
               onClose={() => {
                 setManualSub(false)
-                if (showSubSheet) setSnoozeUntilSec(s.cumulativeSec + 60)
               }}
             >
               <div className="subhead">
@@ -1069,17 +1065,14 @@ export default function Live() {
                 <button type="button" onClick={() => setEditShiftIdx(activeSub.index)}>
                   Change more&hellip;
                 </button>
-                <button type="button" onClick={() => void skipSub()}>
-                  Skip
-                </button>
                 <button
                   type="button"
                   onClick={() => {
                     setManualSub(false)
-                    setSnoozeUntilSec(s.cumulativeSec + 60)
+                    void skipSub()
                   }}
                 >
-                  Delay 1:00
+                  Keep this lineup
                 </button>
               </div>
             </Sheet>
@@ -1224,7 +1217,7 @@ export default function Live() {
                         formation.slots.find((x) => x.id === s.slotOf.get(p.id))?.label ??
                         'on'
                       }`
-                    : ` · owed ${mmss(Math.max(0, owedSec(p.id)))}`}
+                    : ` · sat ${mmss(benchFor(p.id))} · owed ${mmss(Math.max(0, owedSec(p.id)))}`}
                 </span>
               </span>
               <span className="chev" aria-hidden="true">
@@ -1347,7 +1340,7 @@ export default function Live() {
                         <span className="grow">
                           <span className="name">{fullName(p)}</span>
                           <span className="meta">
-                            Add now — even share of what is left
+                            Goes on the bench — even share of what is left
                           </span>
                         </span>
                         <span className="chev" aria-hidden="true">

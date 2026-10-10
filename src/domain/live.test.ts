@@ -8,7 +8,7 @@ import {
   planFieldChange,
   secondsUntilShift,
 } from './live'
-import { generatePlan, replanFrom } from './planner'
+import { generatePlan, holdShortStints, replanFrom } from './planner'
 import { BUILT_IN_FORMATIONS } from './formations'
 import { buildShiftGrid } from './fairness'
 import {
@@ -652,5 +652,101 @@ describe('a substitution made before its planned time', () => {
       const then = derive(log(...bodies), GRID[idx + 1]!.startSec + 1)
       expect(isSubDue(diffToPlan(then.onField, shifts[idx + 1]!.assignments, opts))).toBe(false)
     }
+  })
+})
+
+describe('a player brought on late in a shift', () => {
+  // Subbing someone on with a minute of the shift left, then being told to take
+  // them straight back off at the next change, is the commonest complaint about
+  // the sheet. Whoever has only just come on is held through that change.
+  const roster: Player[] = Array.from({ length: 10 }, (_, i) => ({
+    id: `p${i}`,
+    teamId: 't',
+    firstName: `p${i}`,
+    active: true,
+    gk: 'willing',
+    preferredGroups: [],
+    avoidGroups: [],
+    createdAt: 0,
+  }))
+  const input = {
+    rules: RULES,
+    formation: FORMATION,
+    roster,
+    attendance: roster.map((p) => ({ playerId: p.id, status: 'available' as const })),
+    seed: 11,
+  }
+  const gk = FORMATION.slots.find((sl) => sl.requiredRole === 'GK')!.id
+
+  function lateSub(secondsLeft: number) {
+    const shifts = generatePlan(input).shifts
+    const bodies: [number, GameEventBody][] = [[0, { type: 'PERIOD_START', period: 1 }]]
+    for (const [slotId, playerId] of Object.entries(shifts[0]!.assignments)) {
+      bodies.push([0, { type: 'ON', playerId, slotId }])
+    }
+    const when = GRID[0]!.endSec - secondsLeft
+    const before = derive(log(...bodies), when)
+    const onIds = new Set(Object.values(before.onField))
+    // Someone on the bench the plan has down to sit the next shift too, so the
+    // change cannot be read as the next one brought forward.
+    const nextIds = new Set(Object.values(shifts[1]!.assignments))
+    const incoming =
+      roster.find((p) => !onIds.has(p.id) && !nextIds.has(p.id)) ??
+      roster.find((p) => !onIds.has(p.id))!
+    const slotId = Object.keys(before.onField).find((sid) => sid !== gk)!
+    const change = planFieldChange(before.onField, slotId, incoming.id)
+    for (const b of change.events) bodies.push([when, b])
+
+    const s = derive(log(...bodies), when)
+    const onFor = new Map(
+      Object.values(s.onField).map((id) => [id, when - (s.onSinceSec.get(id) ?? when)]),
+    )
+    const played = new Map(
+      [...s.playedSec].map(([id, sec]) => [id, sec - (s.gkSec.get(id) ?? 0)]),
+    )
+    const next = replanFrom(input, 0, played, s.onField, shifts, {
+      shiftIndex: 0,
+      elapsedSec: when,
+    }, onFor).shifts
+    return { incoming: incoming.id, slotId, next }
+  }
+
+  it('stays on through the next change', () => {
+    for (const left of [20, 60, 100]) {
+      const { incoming, slotId, next } = lateSub(left)
+      expect(next[1]!.assignments[slotId]).toBe(incoming)
+    }
+  })
+
+  it('is not held when most of the shift was still to play', () => {
+    // 200s shifts: on with 150s left is past the two-thirds mark, so the
+    // planner is free to decide the next shift as usual.
+    const s = lateSub(150)
+    const pins = holdShortStints(
+      RULES,
+      FORMATION,
+      s.next,
+      new Map([[s.incoming, 0]]),
+      { shiftIndex: 0, elapsedSec: 50 },
+      1,
+    )
+    expect(pins).toEqual([])
+  })
+
+  it('records when each player came on and went off', () => {
+    const s = derive(
+      log(
+        [0, { type: 'PERIOD_START', period: 1 }],
+        [0, { type: 'ON', playerId: 'a', slotId: 'lb' }],
+        [100, { type: 'MOVE', playerId: 'a', fromSlotId: 'lb', toSlotId: 'rb' }],
+        [150, { type: 'ON', playerId: 'b', slotId: 'lm' }],
+        [180, { type: 'OFF', playerId: 'b', slotId: 'lm' }],
+      ),
+      300,
+    )
+    // A change of position is not a rest.
+    expect(s.onSinceSec.get('a')).toBe(0)
+    expect(s.onSinceSec.has('b')).toBe(false)
+    expect(s.offSinceSec.get('b')).toBe(180)
   })
 })

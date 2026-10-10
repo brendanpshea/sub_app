@@ -282,6 +282,12 @@ export function generatePlan(input: PlannerInput): PlanResult {
       }
 
       const taken = new Set(Object.values(shift.assignments))
+      // Whoever is pinned to a slot further down the list is spoken for.
+      for (const p of pins) {
+        if (p.shiftIndex === i && p.slotId !== slot.id && eligible.has(p.playerId)) {
+          taken.add(p.playerId)
+        }
+      }
       const wantsKeeper = slot.requiredRole === 'GK'
       const available = roster.filter(
         (p) =>
@@ -1224,6 +1230,12 @@ export function replanFrom(
     shiftIndex: fromShiftIndex,
     elapsedSec: 0,
   },
+  /**
+   * Seconds each player on the pitch has been on since they last came on, with
+   * anyone who has only just come on at 0. Whoever would reach the next change
+   * short of `minStintSec` is held on through it. See `holdShortStints`.
+   */
+  onForSec?: Map<ID, number>,
 ): PlanResult {
   // Hold the players who are on the pitch right now; only the future is negotiable.
   const holdPins: Pin[] = Object.entries(currentOnField).map(([slotId, playerId]) => ({
@@ -1253,9 +1265,91 @@ export function replanFrom(
     pins: [
       ...(input.pins ?? []).filter((p) => p.shiftIndex > fromShiftIndex),
       ...holdPins,
+      ...(onForSec
+        ? holdShortStints(
+            input.rules,
+            input.formation,
+            held,
+            onForSec,
+            now,
+            holdPins.length > 0 ? fromShiftIndex + 1 : fromShiftIndex,
+            input.pins ?? [],
+          )
+        : []),
     ],
     fromShiftIndex,
   })
+}
+
+/**
+ * Shortest time a player brought on mid-period should get before coming off.
+ *
+ * Two-thirds of a shift by default: a sub made a little late at a stoppage
+ * still lets the next change go ahead as planned, while one made with only a
+ * minute or two of the shift left does not have the player straight back off.
+ */
+export function minStintSec(rules: GameRules): number {
+  if (rules.minStintMinutes !== undefined) return Math.max(0, rules.minStintMinutes * 60)
+  return Math.round((shiftLengthSec(rules) * 2) / 3)
+}
+
+/**
+ * Keep anyone who has only just come on, on, through the coming changes.
+ *
+ * The planner decides each shift on minutes owed and on who has been waiting,
+ * and a player subbed on late in a shift has done neither: they look level
+ * with everyone, while whoever they replaced looks rested and due back. Left
+ * to itself it swaps the two straight back at the next change, and a child
+ * gets two minutes on the pitch. So each player on the field is pinned to the
+ * position they are in for every shift, from `fromIndex`, that starts before
+ * they have played `minStintSec`. Only within the period being played: the
+ * interval is a natural place to change, and its lineup is the coach's to set.
+ *
+ * `shifts` must hold who is on for the shift before `fromIndex`. Goal duty is
+ * rotated on its own and is left alone, as is anything the coach has pinned.
+ */
+export function holdShortStints(
+  rules: GameRules,
+  formation: Formation,
+  shifts: PlannedShift[],
+  onForSec: Map<ID, number>,
+  now: { shiftIndex: number; elapsedSec: number },
+  fromIndex: number,
+  pins: Pin[] = [],
+): Pin[] {
+  const grid = buildShiftGrid(rules)
+  const cur = grid[now.shiftIndex]
+  const min = minStintSec(rules)
+  if (!cur || min <= 0 || fromIndex <= now.shiftIndex) return []
+  const gkSlotId = formation.slots.find((sl) => sl.requiredRole === 'GK')?.id
+
+  // Seconds from now until shift `k` starts.
+  const untilStart = (k: number): number => {
+    let sec = cur.endSec - cur.startSec - Math.max(0, now.elapsedSec)
+    for (let i = now.shiftIndex + 1; i < k; i++) {
+      const g = grid[i]
+      if (g) sec += g.endSec - g.startSec
+    }
+    return Math.max(0, sec)
+  }
+
+  const out: Pin[] = []
+  const before = shifts[fromIndex - 1]?.assignments ?? {}
+  for (const [slotId, playerId] of Object.entries(before)) {
+    if (slotId === gkSlotId) continue
+    const onFor = onForSec.get(playerId)
+    if (onFor === undefined) continue
+    for (let k = fromIndex; k < grid.length; k++) {
+      if (grid[k]!.period !== cur.period) break
+      if (onFor + untilStart(k) >= min) break
+      const clash = [...pins, ...out].some(
+        (p) => p.shiftIndex === k && (p.slotId === slotId || p.playerId === playerId),
+      )
+      if (clash) break
+      out.push({ shiftIndex: k, slotId, playerId })
+    }
+  }
+  return out
 }
 
 /**

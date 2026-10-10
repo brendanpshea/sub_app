@@ -18,8 +18,11 @@ IndexedDB on the device, because fields have no signal.
 4. **A shift chart** that gives everyone an even share, with pinning and
    re-rolling, editable cell by cell.
 5. **Match day.** A clock that survives a locked phone, a lineup you can
-   rearrange at kick-off and at every break, substitution prompts that wait for
-   the whistle, position swaps, keeper changes, and late arrivals mid-game.
+   rearrange at kick-off and at every break, a "subs due" banner with suggested
+   changes a tap away, how long each player has been on (or sat) since their
+   last change, position swaps, keeper changes, and late arrivals who go
+   straight to the bench. A player subbed on late in a shift is held through the
+   next change rather than brought straight back off.
 6. **A recap** of playing time, goals, assists and saves, with the game
    reopenable if the final whistle was a mis-tap.
 

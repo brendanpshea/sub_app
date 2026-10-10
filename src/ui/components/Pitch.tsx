@@ -7,6 +7,8 @@ export interface SlotFill {
   note?: string
   /** Minutes played so far, already formatted. The one number a sub decision needs. */
   mins?: string
+  /** Time on since they last came off, already formatted. */
+  stint?: string
   /** Whether those minutes are on track, so the figure can carry its own verdict. */
   tone?: 'ok' | 'behind' | 'short'
 }
@@ -47,7 +49,10 @@ export default function Pitch({ formation, fill, onSlotClick, alwaysLabel }: Pro
                 <span className="nm">{f.name}</span>
                 {f.note ? <span className="lab">{f.note}</span> : null}
                 {f.mins ? (
-                  <span className={`mins ${f.tone ?? 'ok'}`}>{f.mins}</span>
+                  <span className={`mins ${f.tone ?? 'ok'}`}>
+                    {f.mins}
+                    {f.stint ? <span className="stint"> · on {f.stint}</span> : null}
+                  </span>
                 ) : null}
               </>
             ) : (
