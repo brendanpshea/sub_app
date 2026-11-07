@@ -11,6 +11,7 @@ import { deriveLive } from '@/domain/live'
 import { goalIsOrdinaryPosition } from '@/domain/planner'
 import type { Formation } from '@/domain/types'
 import { displayName } from '@/domain/types'
+import { sportOf } from '@/domain/sports'
 import AppBar from '../components/AppBar'
 import PlayingTime from '../components/PlayingTime'
 
@@ -68,7 +69,22 @@ export default function Recap() {
     s.cumulativeSec,
   )
 
-  const goals = s.live.filter((e) => e.body.type === 'GOAL')
+  const sport = sportOf(formation.sport)
+  const points = sport.scoring === 'points'
+  const scoreWord = points
+    ? s.score === 1
+      ? 'point'
+      : 'points'
+    : s.goalCount === 1
+      ? 'goal'
+      : 'goals'
+  const scoreNum = points ? s.score : s.goalCount
+  /** Everyone who scored or fouled, best scorer first. */
+  const scorers = available
+    .map((p) => ({ id: p.id, pts: s.points.get(p.id) ?? 0, fouls: s.fouls.get(p.id) ?? 0 }))
+    .filter((x) => x.pts > 0 || x.fouls > 0)
+    .sort((a, b) => b.pts - a.pts || b.fouls - a.fouls)
+  const goals = points ? [] : s.live.filter((e) => e.body.type === 'GOAL')
   const savers = [...s.saves.entries()].sort((a, b) => b[1] - a[1])
   const show = (id: string): string => {
     const p = roster.find((x) => x.id === id)
@@ -94,9 +110,7 @@ export default function Recap() {
    */
   async function remove() {
     const parts = [`${minutes(s!.cumulativeSec)} of playing time`]
-    if (s!.goalCount > 0) {
-      parts.push(`${s!.goalCount} ${s!.goalCount === 1 ? 'goal' : 'goals'}`)
-    }
+    if (scoreNum > 0) parts.push(`${scoreNum} ${scoreWord}`)
     const warn = [
       `Delete the game against ${game!.opponent}?`,
       '',
@@ -116,9 +130,9 @@ export default function Recap() {
       />
       <main>
         <div className="summary">
-          <span className="big">{s.goalCount}</span>
+          <span className="big">{scoreNum}</span>
           <span className="cap">
-            {s.goalCount === 1 ? 'goal' : 'goals'} · {minutes(s.cumulativeSec)} played ·{' '}
+            {scoreWord} · {minutes(s.cumulativeSec)} played ·{' '}
             {whenPlayed(game)}
           </span>
         </div>
@@ -131,9 +145,11 @@ export default function Recap() {
           goalIsOrdinary={goalOrdinary}
         />
         <div className="dim" style={{ marginTop: '0.5rem', padding: '0 0.2rem' }}>
-          {goalOrdinary
-            ? 'Total minutes. The goal rotates like any other position.'
-            : 'Field minutes, with time in goal shown separately. The team shares out field time; goal duty is rotated on its own.'}
+          {!sport.hasKeeper
+            ? 'Total minutes, against an even share of the game.'
+            : goalOrdinary
+              ? 'Total minutes. The goal rotates like any other position.'
+              : 'Field minutes, with time in goal shown separately. The team shares out field time; goal duty is rotated on its own.'}
         </div>
 
         {goals.length > 0 ? (
@@ -154,6 +170,28 @@ export default function Recap() {
                   </div>
                 )
               })}
+            </div>
+          </>
+        ) : null}
+
+        {points && scorers.length > 0 ? (
+          <>
+            <div className="section-label">Scoring</div>
+            <div className="card">
+              {scorers.map((x) => (
+                <div className="final-line" key={x.id}>
+                  <span>
+                    {show(x.id)}
+                    {x.fouls > 0 ? (
+                      <span className="dim">
+                        {' '}
+                        · {x.fouls} {x.fouls === 1 ? 'foul' : 'fouls'}
+                      </span>
+                    ) : null}
+                  </span>
+                  <b className="tnum">{x.pts}</b>
+                </div>
+              ))}
             </div>
           </>
         ) : null}

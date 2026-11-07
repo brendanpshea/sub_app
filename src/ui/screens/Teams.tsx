@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { createTeam, db } from '@/db/db'
+import { SPORTS, sportOf } from '@/domain/sports'
+import type { SportId } from '@/domain/types'
 import AppBar from '../components/AppBar'
 import Sheet from '../components/Sheet'
 
@@ -24,11 +26,12 @@ export default function Teams() {
   const [adding, setAdding] = useState(false)
   const [name, setName] = useState('')
   const [season, setSeason] = useState(currentSeason())
+  const [sport, setSport] = useState<SportId>('soccer')
 
   async function save() {
     const n = name.trim()
     if (!n) return
-    const team = await createTeam(n, season)
+    const team = await createTeam(n, season, sport)
     setAdding(false)
     setName('')
     nav(`/team/${team.id}`)
@@ -62,7 +65,7 @@ export default function Teams() {
                 <span className="grow">
                   <span className="name">{t.name}</span>
                   <span className="meta">
-                    {t.season} · {counts?.[t.id] ?? 0} players
+                    {sportOf(t.sport).label} · {t.season} · {counts?.[t.id] ?? 0} players
                   </span>
                 </span>
                 <span className="chev" aria-hidden="true">
@@ -77,6 +80,10 @@ export default function Teams() {
           <Link className="btn" to="/backup">
             Backup &amp; restore
           </Link>
+        </div>
+
+        <div className="dim" style={{ marginTop: '1.4rem', textAlign: 'center' }}>
+          Version {__APP_VERSION__}
         </div>
       </main>
 
@@ -95,6 +102,22 @@ export default function Teams() {
               }}
             />
           </label>
+          <div className="field">
+            <div className="field-label">Sport</div>
+            <div className="chips">
+              {Object.values(SPORTS).map((sp) => (
+                <button
+                  key={sp.id}
+                  type="button"
+                  className="chipbtn"
+                  aria-pressed={sport === sp.id}
+                  onClick={() => setSport(sp.id)}
+                >
+                  {sp.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <label className="field">
             <span>Season</span>
             <input

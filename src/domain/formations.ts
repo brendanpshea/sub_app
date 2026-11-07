@@ -1,4 +1,4 @@
-import type { Formation, Slot, PositionGroup } from './types'
+import type { Formation, Slot, PositionGroup, SportId } from './types'
 
 /**
  * Built-in formation library.
@@ -24,10 +24,10 @@ function slot(
 
 const GK = slot('gk', 'GK', 'GK', 0.5, 0.93, 'GK')
 
-function f(id: string, name: string, slots: Slot[]): Formation {
+function f(id: string, name: string, slots: Slot[], sport: SportId = 'soccer'): Formation {
   return {
     id,
-    sport: 'soccer',
+    sport,
     name,
     playersOnField: slots.length,
     slots,
@@ -81,9 +81,75 @@ export const BUILT_IN_FORMATIONS: Formation[] = [
     slot('ls', 'LS', 'FWD', 0.34, 0.22),
     slot('rs', 'RS', 'FWD', 0.66, 0.22),
   ]),
+
+  // Basketball, drawn on the half court the team attacks: the basket is at the
+  // top, guards furthest from it, the center nearest. Groups run guard (DEF),
+  // forward (MID), center (FWD) — see sports.ts.
+  f(
+    'b5_std',
+    '5 — two guards',
+    [
+      slot('pg', 'PG', 'DEF', 0.34, 0.8),
+      slot('sg', 'SG', 'DEF', 0.74, 0.7),
+      slot('sf', 'SF', 'MID', 0.16, 0.44),
+      slot('pf', 'PF', 'MID', 0.84, 0.4),
+      slot('c', 'C', 'FWD', 0.5, 0.24),
+    ],
+    'basketball',
+  ),
+  f(
+    'b5_4o1i',
+    '5 — four out',
+    [
+      slot('pg', 'PG', 'DEF', 0.5, 0.82),
+      slot('lw', 'LW', 'DEF', 0.15, 0.58),
+      slot('rw', 'RW', 'DEF', 0.85, 0.58),
+      slot('lf', 'LF', 'MID', 0.2, 0.22),
+      slot('c', 'C', 'FWD', 0.62, 0.24),
+    ],
+    'basketball',
+  ),
+  f(
+    'b5_3g',
+    '5 — three guards',
+    [
+      slot('pg', 'PG', 'DEF', 0.5, 0.82),
+      slot('lg', 'LG', 'DEF', 0.16, 0.6),
+      slot('rg', 'RG', 'DEF', 0.84, 0.6),
+      slot('f', 'F', 'MID', 0.3, 0.3),
+      slot('c', 'C', 'FWD', 0.68, 0.26),
+    ],
+    'basketball',
+  ),
+  f(
+    'b4_22',
+    '4 on 4',
+    [
+      slot('lg', 'LG', 'DEF', 0.3, 0.78),
+      slot('rg', 'RG', 'DEF', 0.7, 0.78),
+      slot('lf', 'LF', 'MID', 0.24, 0.34),
+      slot('rf', 'RF', 'MID', 0.76, 0.34),
+    ],
+    'basketball',
+  ),
+  f(
+    'b3_gfc',
+    '3 on 3',
+    [
+      slot('g', 'G', 'DEF', 0.5, 0.8),
+      slot('f', 'F', 'MID', 0.2, 0.42),
+      slot('c', 'C', 'FWD', 0.72, 0.28),
+    ],
+    'basketball',
+  ),
 ]
 
 export const DEFAULT_FORMATION_ID = 'f7_231'
+
+/** The built-in shapes for one sport. */
+export function formationsFor(sport: SportId | undefined): Formation[] {
+  return BUILT_IN_FORMATIONS.filter((x) => x.sport === (sport ?? 'soccer'))
+}
 
 export function findFormation(
   formations: Formation[] | undefined,

@@ -12,7 +12,7 @@ import {
   updateGame,
   updateRules,
 } from '@/db/games'
-import { BUILT_IN_FORMATIONS, findFormation } from '@/domain/formations'
+import { BUILT_IN_FORMATIONS, findFormation, formationsFor } from '@/domain/formations'
 import { fairShareSec, minutes } from '@/domain/fairness'
 import type { Attendance, AttendanceStatus, Player } from '@/domain/types'
 import { fullName, gameLengthSec } from '@/domain/types'
@@ -185,7 +185,11 @@ export default function GameSetup() {
         </button>
 
         <div className="section-label">Match rules — this game only</div>
-        <MatchRules rules={game.rules} onChange={(p) => void updateRules(gameId, p)} />
+        <MatchRules
+          rules={game.rules}
+          sport={formation.sport}
+          onChange={(p) => void updateRules(gameId, p)}
+        />
 
         <div className="btn-row" style={{ marginTop: '1.4rem' }}>
           <button
@@ -222,7 +226,7 @@ export default function GameSetup() {
               gap: '0.6rem',
             }}
           >
-            {BUILT_IN_FORMATIONS.map((f) => (
+            {formationsFor(formation.sport).map((f) => (
               <button
                 key={f.id}
                 type="button"

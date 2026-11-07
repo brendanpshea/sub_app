@@ -1,6 +1,7 @@
 # Touchline
 
-Substitutions, playing time and stats for youth soccer, run from the sideline.
+Substitutions, playing time and stats for youth soccer and basketball, run
+from the sideline.
 
 **[brendanpshea.github.io/sub_app](https://brendanpshea.github.io/sub_app/)**
 
@@ -26,6 +27,12 @@ IndexedDB on the device, because fields have no signal.
 6. **A recap** of playing time, goals, assists and saves, with the game
    reopenable if the final whistle was a mis-tap.
 
+**Basketball** is a choice when a team is created. The rotation works the same
+way; what changes is the court, the lineups (5, 4 or 3 on the court, as guards,
+forwards and center), no keeper, baskets scored as +1/+2/+3 in one tap, and
+personal fouls, with a player who reaches five offered out of the game. Sport
+differences live in `src/domain/sports.ts`.
+
 Backup and restore as JSON, because a lost phone is otherwise a lost season.
 
 ## Installing it
@@ -34,6 +41,11 @@ Open <https://brendanpshea.github.io/sub_app/> on the phone. On Android, Chrome
 offers *Install app* in its menu; on an iPhone, use Safari's *Share → Add to
 Home Screen*. After the first visit it works with no signal. The icons are
 rendered by `scripts/make-icons.py` (needs Pillow) from the favicon's design.
+
+The installed app checks for a new version each time it is brought to the
+front and reloads onto it, except while a game is on screen, where the update
+waits until you leave the match. The version is shown at the bottom of the
+home screen.
 
 ## Running it
 

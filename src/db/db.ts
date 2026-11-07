@@ -1,5 +1,6 @@
 import Dexie, { type Table } from 'dexie'
 import type {
+  SportId,
   Formation,
   Game,
   GameEvent,
@@ -8,8 +9,8 @@ import type {
   Player,
   Team,
 } from '@/domain/types'
-import { DEFAULT_RULES, nameSortKey } from '@/domain/types'
-import { DEFAULT_FORMATION_ID } from '@/domain/formations'
+import { nameSortKey } from '@/domain/types'
+import { sportOf } from '@/domain/sports'
 import { newId } from '@/domain/ids'
 
 class TouchlineDB extends Dexie {
@@ -60,14 +61,19 @@ export const db = new TouchlineDB()
 
 // ---------------------------------------------------------------- teams
 
-export async function createTeam(name: string, season: string): Promise<Team> {
+export async function createTeam(
+  name: string,
+  season: string,
+  sport: SportId = 'soccer',
+): Promise<Team> {
+  const profile = sportOf(sport)
   const team: Team = {
     id: newId('tm'),
     name: name.trim(),
-    sport: 'soccer',
+    sport,
     season: season.trim(),
-    defaultFormationId: DEFAULT_FORMATION_ID,
-    rules: { ...DEFAULT_RULES },
+    defaultFormationId: profile.defaultFormationId,
+    rules: { ...profile.defaultRules },
     createdAt: Date.now(),
   }
   await db.teams.add(team)

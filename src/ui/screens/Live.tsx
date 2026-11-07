@@ -39,6 +39,7 @@ import LineupEditor from '../components/LineupEditor'
 import PlayingTime from '../components/PlayingTime'
 import Sheet from '../components/Sheet'
 import { useNow, useWakeLock } from '../hooks/useLive'
+import { sportOf } from '@/domain/sports'
 
 const ON_DECK_LEAD_SEC = 60
 
@@ -63,7 +64,7 @@ export default function Live() {
   const events = useLiveQuery(() => eventsOf(gameId), [gameId])
 
   const [menu, setMenu] = useState(false)
-  const [scoring, setScoring] = useState<null | 'goal' | 'assist'>(null)
+  const [scoring, setScoring] = useState<null | 'goal' | 'assist' | 'foul'>(null)
   const [scorer, setScorer] = useState<string | null>(null)
   const [slotSheet, setSlotSheet] = useState<{
     slotId: SlotId
@@ -133,6 +134,13 @@ export default function Live() {
   }
 
   const gkSlotId = formation.slots.find((sl) => sl.requiredRole === 'GK')?.id
+  const sport = sportOf(formation.sport)
+  const points = sport.scoring === 'points'
+  /** "3 goals", "14 points". */
+  const scoreText =
+    points
+      ? `${s.score} ${s.score === 1 ? 'point' : 'points'}`
+      : `${s.goalCount} ${s.goalCount === 1 ? 'goal' : 'goals'}`
 
   const shiftIdx =
     s.period > 0 ? currentShiftIndex(grid, rules, s.period, s.periodElapsedSec) : -1
@@ -737,13 +745,39 @@ export default function Live() {
     window.setTimeout(() => setToast(null), 1800)
   }
 
-  async function logGoal(playerId: string | null, assistId: string | null) {
+  async function logGoal(playerId: string | null, assistId: string | null, pts?: number) {
     const body: GameEventBody = { type: 'GOAL' }
     if (playerId) body.playerId = playerId
     if (assistId) body.assistId = assistId
+    if (pts !== undefined) body.points = pts
     await appendMany(gameId, [body], s!.cumulativeSec)
     setScoring(null)
     setScorer(null)
+    if (pts !== undefined) {
+      setToast(`+${pts}${playerId ? ` — ${show(playerId)}` : ''}`)
+      window.setTimeout(() => setToast(null), 1800)
+    }
+  }
+
+  /**
+   * A personal foul. At the limit the player has to leave the game, which is
+   * the same as leaving early: they come off, keep the minutes they played, and
+   * the rest of the game is shared among everyone else.
+   */
+  async function logFoul(playerId: string) {
+    await appendMany(gameId, [{ type: 'FOUL', playerId }], s!.cumulativeSec)
+    setScoring(null)
+    const n = (s!.fouls.get(playerId) ?? 0) + 1
+    const limit = sport.foulLimit
+    if (limit && n >= limit) {
+      const name = fullName(byId.get(playerId)!)
+      if (confirm(`${name} has ${n} fouls and has fouled out. Take them out of the game?`)) {
+        await changeAttendance(playerId, false)
+        return
+      }
+    }
+    setToast(`Foul — ${show(playerId)} (${n})`)
+    window.setTimeout(() => setToast(null), 1800)
   }
 
   // ---------------------------------------------------------------- render
@@ -752,11 +786,13 @@ export default function Live() {
   for (const [slotId, playerId] of Object.entries(s.onField)) {
     const p = byId.get(playerId)
     if (!p) continue
+    const fouls = s.fouls.get(playerId) ?? 0
     fill[slotId] = {
       name: displayName(p, available),
       mins: minutes(s.playedSec.get(playerId) ?? 0),
       stint: mmss(onFor(playerId)),
       tone: toneFor(playerId),
+      ...(fouls > 0 ? { note: `${fouls} ${fouls === 1 ? 'foul' : 'fouls'}` } : {}),
     }
   }
 
@@ -843,7 +879,7 @@ export default function Live() {
                   disabled={Object.keys(startAssign).length === 0}
                   onClick={() => void startPeriod(1)}
                 >
-                  KICK OFF
+                  {sport.start}
                 </button>
               }
             />
@@ -888,7 +924,7 @@ export default function Live() {
           <>
             <div className="empty" style={{ paddingBottom: '0.8rem' }}>
               <strong>Full time</strong>
-              {s.goalCount} {s.goalCount === 1 ? 'goal' : 'goals'} ·{' '}
+              {scoreText} ·{' '}
               {minutes(s.cumulativeSec)} played
             </div>
             <PlayingTime
@@ -1262,7 +1298,61 @@ export default function Live() {
         })()
       ) : null}
 
-      {scoring === 'goal' ? (
+      {scoring === 'goal' && points ? (
+        <Sheet title="Who scored?" onClose={() => setScoring(null)}>
+          <div className="card">
+            {[...Object.values(s.onField), null].map((id) => (
+              <div key={id ?? 'unknown'} className="row score-row">
+                <span className="grow">
+                  <span className="name">{id ? show(id) : 'Not sure'}</span>
+                  {id && s.points.get(id) ? (
+                    <span className="meta">{s.points.get(id)} so far</span>
+                  ) : null}
+                </span>
+                {[1, 2, 3].map((pts) => (
+                  <button
+                    key={pts}
+                    type="button"
+                    className="pts"
+                    aria-label={`${pts} for ${id ? show(id) : 'unknown'}`}
+                    onClick={() => void logGoal(id, null, pts)}
+                  >
+                    +{pts}
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+        </Sheet>
+      ) : null}
+
+      {scoring === 'foul' ? (
+        <Sheet title="Foul on" onClose={() => setScoring(null)}>
+          <div className="card">
+            {Object.values(s.onField).map((id) => {
+              const n = s.fouls.get(id) ?? 0
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  className="row"
+                  onClick={() => void logFoul(id)}
+                >
+                  <span className="grow">
+                    <span className="name">{show(id)}</span>
+                    <span className="meta">
+                      {n === 0 ? 'No fouls' : `${n} ${n === 1 ? 'foul' : 'fouls'}`}
+                      {sport.foulLimit && n === sport.foulLimit - 1 ? ' · one more and out' : ''}
+                    </span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </Sheet>
+      ) : null}
+
+      {scoring === 'goal' && !points ? (
         <Sheet title="Who scored?" onClose={() => setScoring(null)}>
           <div className="card">
             {Object.values(s.onField).map((id) => (
@@ -1399,25 +1489,43 @@ export default function Live() {
               disabled={s.status !== 'running' && s.status !== 'paused'}
             >
               <span className="grow">
-                <span className="name">Goal for us</span>
-                <span className="meta">{s.goalCount} so far</span>
+                <span className="name">{points ? 'Basket for us' : 'Goal for us'}</span>
+                <span className="meta">{scoreText} so far</span>
               </span>
             </button>
-            <button
-              type="button"
-              className="row"
-              disabled={!(gkSlotId && s.onField[gkSlotId])}
-              onClick={() => void logSave()}
-            >
-              <span className="grow">
-                <span className="name">Save</span>
-                <span className="meta">
-                  {gkSlotId && s.onField[gkSlotId]
-                    ? `Credited to ${show(s.onField[gkSlotId])}`
-                    : 'Nobody is in goal'}
+            {sport.foulLimit ? (
+              <button
+                type="button"
+                className="row"
+                onClick={() => {
+                  setMenu(false)
+                  setScoring('foul')
+                }}
+                disabled={s.status !== 'running' && s.status !== 'paused'}
+              >
+                <span className="grow">
+                  <span className="name">Foul</span>
+                  <span className="meta">Out at {sport.foulLimit}</span>
                 </span>
-              </span>
-            </button>
+              </button>
+            ) : null}
+            {gkSlotId ? (
+              <button
+                type="button"
+                className="row"
+                disabled={!s.onField[gkSlotId]}
+                onClick={() => void logSave()}
+              >
+                <span className="grow">
+                  <span className="name">Save</span>
+                  <span className="meta">
+                    {gkSlotId && s.onField[gkSlotId]
+                      ? `Credited to ${show(s.onField[gkSlotId])}`
+                      : 'Nobody is in goal'}
+                  </span>
+                </span>
+              </button>
+            ) : null}
             <button
               type="button"
               className="row"
@@ -1446,7 +1554,7 @@ export default function Live() {
             >
               <span className="grow">
                 <span className="name">Undo last action</span>
-                <span className="meta">Cancels the last sub or goal</span>
+                <span className="meta">Cancels the last sub, score or foul</span>
               </span>
             </button>
             {s.status === 'running' || s.status === 'paused' ? (
@@ -1505,7 +1613,7 @@ function BreakChanges({
   if (!diff.keeper && on.length === 0 && off.length === 0) {
     return (
       <div className="dim" style={{ textAlign: 'center', marginTop: '0.7rem' }}>
-        Same eleven as the end of the last period.
+        Same lineup as the end of the last period.
       </div>
     )
   }

@@ -14,6 +14,7 @@ import {
   signedMmss,
 } from '@/domain/fairness'
 import { generatePlan } from '@/domain/planner'
+import { sportOf } from '@/domain/sports'
 import type { Formation, Pin, PlannedShift, Player, SlotId } from '@/domain/types'
 import { displayName, fullName, nameSortKey } from '@/domain/types'
 import AppBar from '../components/AppBar'
@@ -48,6 +49,7 @@ export default function PlanGrid() {
 
   const formation: Formation =
     findFormation(custom, game?.formationId ?? '') ?? BUILT_IN_FORMATIONS[0]!
+  const sport = sportOf(formation.sport)
 
   const attendance = useMemo(
     () => (game && roster ? reconcileAttendance(game.attendance, roster) : []),
@@ -313,17 +315,22 @@ export default function PlanGrid() {
             </div>
 
             <div className="legend">
+              {sport.hasKeeper ? (
+                <span>
+                  <i className="swatch" style={{ background: '#c99a12' }} /> Keeper
+                </span>
+              ) : null}
               <span>
-                <i className="swatch" style={{ background: '#c99a12' }} /> Keeper
+                <i className="swatch" style={{ background: '#2f6f4f' }} />{' '}
+                {sport.hasKeeper ? 'Defence' : sport.groupShort.DEF}
               </span>
               <span>
-                <i className="swatch" style={{ background: '#2f6f4f' }} /> Defence
+                <i className="swatch" style={{ background: '#3a6f96' }} />{' '}
+                {sport.hasKeeper ? 'Midfield' : sport.groupShort.MID}
               </span>
               <span>
-                <i className="swatch" style={{ background: '#3a6f96' }} /> Midfield
-              </span>
-              <span>
-                <i className="swatch" style={{ background: '#a8543f' }} /> Attack
+                <i className="swatch" style={{ background: '#a8543f' }} />{' '}
+                {sport.hasKeeper ? 'Attack' : sport.groupShort.FWD}
               </span>
             </div>
 

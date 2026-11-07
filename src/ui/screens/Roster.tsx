@@ -4,16 +4,10 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { addPlayer, db, deletePlayer, rosterOf, updatePlayer } from '@/db/db'
 import type { GkWillingness, PositionGroup, Player } from '@/domain/types'
 import { fullName, nameSortKey } from '@/domain/types'
+import { sportOf, type SportProfile } from '@/domain/sports'
 import AppBar from '../components/AppBar'
 import Sheet from '../components/Sheet'
 
-const FIELD_GROUPS: PositionGroup[] = ['DEF', 'MID', 'FWD']
-const GROUP_SHORT: Record<PositionGroup, string> = {
-  GK: 'Keeper',
-  DEF: 'Def',
-  MID: 'Mid',
-  FWD: 'Fwd',
-}
 
 const GK_OPTIONS: { value: GkWillingness; label: string }[] = [
   { value: 'never', label: 'Never' },
@@ -21,14 +15,16 @@ const GK_OPTIONS: { value: GkWillingness; label: string }[] = [
   { value: 'preferred', label: 'Prefers it' },
 ]
 
-function summarise(p: Player): string {
+function summarise(p: Player, sport: SportProfile): string {
   const bits: string[] = []
-  if (p.gk === 'preferred') bits.push('Keeper')
-  else if (p.gk === 'never') bits.push('No goal')
+  if (sport.hasKeeper) {
+    if (p.gk === 'preferred') bits.push('Keeper')
+    else if (p.gk === 'never') bits.push('No goal')
+  }
   if (p.preferredGroups.length)
-    bits.push(p.preferredGroups.map((g) => GROUP_SHORT[g]).join('/'))
+    bits.push(p.preferredGroups.map((g) => sport.groupShort[g]).join('/'))
   if (p.avoidGroups.length)
-    bits.push(`not ${p.avoidGroups.map((g) => GROUP_SHORT[g]).join('/')}`)
+    bits.push(`not ${p.avoidGroups.map((g) => sport.groupShort[g]).join('/')}`)
   if (!p.active) bits.push('Inactive')
   return bits.join(' · ') || 'No constraints'
 }
@@ -41,6 +37,7 @@ export default function Roster() {
   const { teamId = '' } = useParams()
   const team = useLiveQuery(() => db.teams.get(teamId), [teamId])
   const players = useLiveQuery(() => rosterOf(teamId), [teamId])
+  const sport = sportOf(team?.sport)
 
   const [editing, setEditing] = useState<Player | null>(null)
   const [adding, setAdding] = useState(false)
@@ -78,7 +75,8 @@ export default function Roster() {
         {players === undefined ? null : sorted.length === 0 ? (
           <div className="empty">
             <strong>No players yet</strong>
-            Add everyone on the team. Positions and goalkeeping come after.
+            Add everyone on the team. Positions{sport.hasKeeper ? ' and goalkeeping' : ''}{' '}
+            come after.
             <div className="btn-row" style={{ marginTop: '1.2rem' }}>
               <button type="button" className="btn primary" onClick={() => setAdding(true)}>
                 Add a player
@@ -95,12 +93,14 @@ export default function Roster() {
                 onClick={() => setEditing(p)}
                 style={p.active ? undefined : { opacity: 0.55 }}
               >
-                <span className={`num-badge${p.gk === 'preferred' ? ' gk' : ''}`}>
+                <span
+                  className={`num-badge${sport.hasKeeper && p.gk === 'preferred' ? ' gk' : ''}`}
+                >
                   {p.number ?? p.firstName.charAt(0).toUpperCase()}
                 </span>
                 <span className="grow">
                   <span className="name">{fullName(p)}</span>
-                  <span className="meta">{summarise(p)}</span>
+                  <span className="meta">{summarise(p, sport)}</span>
                 </span>
                 <span className="chev" aria-hidden="true">
                   ›
@@ -112,8 +112,10 @@ export default function Roster() {
 
         {sorted.length > 0 ? (
           <div className="dim" style={{ marginTop: '0.9rem', padding: '0 0.2rem' }}>
-            {active.length} active · {active.filter((p) => p.gk !== 'never').length} can
-            go in goal
+            {active.length} active
+            {sport.hasKeeper
+              ? ` · ${active.filter((p) => p.gk !== 'never').length} can go in goal`
+              : ''}
           </div>
         ) : null}
       </main>
@@ -169,6 +171,7 @@ export default function Roster() {
           key={editing.id}
           player={editing}
           squad={sorted}
+          sport={sport}
           onClose={() => setEditing(null)}
         />
       ) : null}
@@ -181,10 +184,12 @@ export default function Roster() {
 function PlayerEditor({
   player,
   squad,
+  sport,
   onClose,
 }: {
   player: Player
   squad: Player[]
+  sport: SportProfile
   onClose: () => void
 }) {
   const [p, setP] = useState<Player>(player)
@@ -237,7 +242,7 @@ function PlayerEditor({
       {p.firstName.trim().includes(' ') && !p.lastName ? (
         <div className="dim" style={{ marginTop: '-0.4rem', marginBottom: '0.8rem' }}>
           Player chips show the first name only, so this whole name will appear on
-          the pitch.{' '}
+          the {sport.surface}.{' '}
           <button
             type="button"
             className="linky"
@@ -274,28 +279,30 @@ function PlayerEditor({
         />
       </label>
 
-      <div className="field">
-        <FieldLabel>Goalkeeper</FieldLabel>
-        <div className="chips">
-          {GK_OPTIONS.map((o) => (
-            <button
-              key={o.value}
-              type="button"
-              className="chipbtn"
-              aria-pressed={p.gk === o.value}
-              onClick={() => patch({ gk: o.value })}
-            >
-              {o.label}
-            </button>
-          ))}
+      {sport.hasKeeper ? (
+        <div className="field">
+          <FieldLabel>Goalkeeper</FieldLabel>
+          <div className="chips">
+            {GK_OPTIONS.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                className="chipbtn"
+                aria-pressed={p.gk === o.value}
+                onClick={() => patch({ gk: o.value })}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <div className="dim">Time in goal counts as playing time.</div>
         </div>
-        <div className="dim">Time in goal counts as playing time.</div>
-      </div>
+      ) : null}
 
       <div className="field">
         <FieldLabel>Prefers</FieldLabel>
         <div className="chips">
-          {FIELD_GROUPS.map((g) => (
+          {sport.groups.map((g) => (
             <button
               key={g}
               type="button"
@@ -303,7 +310,7 @@ function PlayerEditor({
               aria-pressed={p.preferredGroups.includes(g)}
               onClick={() => toggleGroup('preferredGroups', g)}
             >
-              {GROUP_SHORT[g]}
+              {sport.groupShort[g]}
             </button>
           ))}
         </div>
@@ -312,7 +319,7 @@ function PlayerEditor({
       <div className="field">
         <FieldLabel>Avoids</FieldLabel>
         <div className="chips">
-          {FIELD_GROUPS.map((g) => (
+          {sport.groups.map((g) => (
             <button
               key={g}
               type="button"
@@ -320,7 +327,7 @@ function PlayerEditor({
               aria-pressed={p.avoidGroups.includes(g)}
               onClick={() => toggleGroup('avoidGroups', g)}
             >
-              {GROUP_SHORT[g]}
+              {sport.groupShort[g]}
             </button>
           ))}
         </div>

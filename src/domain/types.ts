@@ -10,7 +10,7 @@
 
 export type ID = string
 export type SlotId = string
-export type SportId = 'soccer'
+export type SportId = 'soccer' | 'basketball'
 
 export type PositionGroup = 'GK' | 'DEF' | 'MID' | 'FWD'
 
@@ -199,7 +199,12 @@ export type GameEventBody =
   | { type: 'ON'; playerId: ID; slotId: SlotId }
   | { type: 'OFF'; playerId: ID; slotId: SlotId }
   | { type: 'MOVE'; playerId: ID; fromSlotId: SlotId; toSlotId: SlotId }
-  | { type: 'GOAL'; playerId?: ID; assistId?: ID } // ours only — the ref keeps the score
+  /**
+   * Ours only — the ref keeps the score. A goal is worth one; a basket says
+   * what it was worth.
+   */
+  | { type: 'GOAL'; playerId?: ID; assistId?: ID; points?: number }
+  | { type: 'FOUL'; playerId: ID }
   | { type: 'SAVE'; playerId: ID }
   | { type: 'NOTE'; text: string }
   | { type: 'VOID'; seq: number } // undo = append, never delete

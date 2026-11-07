@@ -1,31 +1,32 @@
 import { useParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/db'
-import { BUILT_IN_FORMATIONS } from '@/domain/formations'
+import { formationsFor } from '@/domain/formations'
+import { sportOf, type SportProfile } from '@/domain/sports'
 import type { PositionGroup } from '@/domain/types'
 import AppBar from '../components/AppBar'
 import Pitch from '../components/Pitch'
 
-const GROUP_WORD: Record<PositionGroup, string> = {
-  GK: 'keeper',
-  DEF: 'at the back',
-  MID: 'in midfield',
-  FWD: 'up top',
-}
-
-/** "2 at the back, 3 in midfield, 1 up top" — said the way a coach says it. */
-function describe(slots: { group: PositionGroup; requiredRole?: 'GK' }[]): string {
-  const order: PositionGroup[] = ['DEF', 'MID', 'FWD']
-  return order
+/**
+ * "2 at the back, 3 in midfield, 1 up top", or "2 guards, 2 forwards, 1 center"
+ * — said the way a coach says it.
+ */
+export function describe(
+  sport: SportProfile,
+  slots: { group: PositionGroup; requiredRole?: 'GK' }[],
+): string {
+  return sport.groups
     .map((g) => ({ g, n: slots.filter((s) => s.requiredRole !== 'GK' && s.group === g).length }))
     .filter((x) => x.n > 0)
-    .map((x) => `${x.n} ${GROUP_WORD[x.g]}`)
+    .map((x) => sport.groupPhrase(x.g, x.n))
     .join(', ')
 }
 
 export default function FormationPicker() {
   const { teamId = '' } = useParams()
   const team = useLiveQuery(() => db.teams.get(teamId), [teamId])
+
+  const sport = sportOf(team?.sport)
 
   async function choose(id: string) {
     await db.teams.update(teamId, { defaultFormationId: id })
@@ -46,7 +47,7 @@ export default function FormationPicker() {
             gap: '0.7rem',
           }}
         >
-          {BUILT_IN_FORMATIONS.map((f) => {
+          {formationsFor(team?.sport).map((f) => {
             const selected = team?.defaultFormationId === f.id
             return (
               <button
@@ -90,7 +91,7 @@ export default function FormationPicker() {
                   ) : null}
                 </div>
                 <div className="dim" style={{ fontSize: '0.76rem' }}>
-                  {describe(f.slots)}
+                  {describe(sport, f.slots)}
                 </div>
               </button>
             )
@@ -98,8 +99,7 @@ export default function FormationPicker() {
         </div>
 
         <div className="dim" style={{ marginTop: '1.2rem', padding: '0 0.2rem' }}>
-          Building a custom shape by dragging positions around comes later. These five
-          cover almost every 7v7 side.
+          Building a custom shape by dragging positions around comes later.
         </div>
       </main>
     </>

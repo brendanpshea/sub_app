@@ -3,6 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { db, deleteTeam, teamFootprint } from '@/db/db'
 import { BUILT_IN_FORMATIONS, findFormation } from '@/domain/formations'
 import { gameLengthSec } from '@/domain/types'
+import { sportOf } from '@/domain/sports'
 import AppBar from '../components/AppBar'
 import Pitch from '../components/Pitch'
 
@@ -47,7 +48,8 @@ export default function TeamDetail() {
     .sort((a, b) => a.kickoffAt - b.kickoffAt)[0]
 
   const active = (players ?? []).filter((p) => p.active)
-  const keepers = active.filter((p) => p.gk !== 'never')
+  const sport = sportOf(team.sport)
+  const keepers = sport.hasKeeper ? active.filter((p) => p.gk !== 'never') : []
   const minutesEach =
     active.length > 0
       ? Math.round(

@@ -750,3 +750,25 @@ describe('a player brought on late in a shift', () => {
     expect(s.offSinceSec.get('b')).toBe(180)
   })
 })
+
+describe('scoring', () => {
+  it('adds baskets up by what they were worth, and counts fouls', () => {
+    const s = derive(
+      log(
+        [0, { type: 'PERIOD_START', period: 1 }],
+        [10, { type: 'GOAL', playerId: 'a', points: 2 }],
+        [20, { type: 'GOAL', playerId: 'a', points: 3 }],
+        [30, { type: 'GOAL', playerId: 'b', points: 1 }],
+        [40, { type: 'GOAL' }],
+        [50, { type: 'FOUL', playerId: 'b' }],
+        [60, { type: 'FOUL', playerId: 'b' }],
+      ),
+      100,
+    )
+    expect(s.goalCount).toBe(4)
+    expect(s.score).toBe(7) // an unattributed goal counts one
+    expect(s.points.get('a')).toBe(5)
+    expect(s.points.get('b')).toBe(1)
+    expect(s.fouls.get('b')).toBe(2)
+  })
+})

@@ -517,6 +517,61 @@ textarea {
   border-top: 0;
 }
 
+/* Basketball: a wooden half court, basket at the top. */
+.pitch.court {
+  background: #c48a52;
+  aspect-ratio: 0.8;
+  --pitch-line: rgba(255, 255, 255, 0.78);
+}
+
+.pitch.court .arc {
+  position: absolute;
+  left: 7%;
+  right: 7%;
+  top: -42%;
+  height: 100%;
+  border: 1.5px solid var(--pitch-line);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.pitch.court .key {
+  position: absolute;
+  left: 50%;
+  top: 6px;
+  width: 32%;
+  height: 40%;
+  transform: translateX(-50%);
+  background: rgba(120, 50, 20, 0.22);
+  border: 1.5px solid var(--pitch-line);
+  border-top: 0;
+  pointer-events: none;
+}
+
+.pitch.court .ft {
+  position: absolute;
+  left: 50%;
+  top: calc(6px + 40%);
+  width: 32%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border: 1.5px dashed var(--pitch-line);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.pitch.court .hoop {
+  position: absolute;
+  left: 50%;
+  top: 8%;
+  width: 7%;
+  aspect-ratio: 1;
+  transform: translateX(-50%);
+  border: 2px solid #f06a2a;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
 .slot {
   position: absolute;
   transform: translate(-50%, -50%);
@@ -1282,6 +1337,30 @@ table.plan .qsep {
 .bchip2.deck em {
   color: var(--accent);
   opacity: 0.8;
+}
+
+/* Basket buttons: one tap records who scored and what it was worth. */
+.score-row {
+  gap: 0.4rem;
+}
+
+.score-row .pts {
+  min-width: 52px;
+  min-height: 46px;
+  border: 1px solid var(--rule-2);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 1.05rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.score-row .pts:active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
 }
 
 /* ---------------------------------------------------------------- sub sheet */

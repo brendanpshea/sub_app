@@ -57,7 +57,13 @@ export interface LiveState {
   goals: Map<ID, number>
   assists: Map<ID, number>
   saves: Map<ID, number>
+  /** Points each player scored: a goal is one, a basket what it was worth. */
+  points: Map<ID, number>
+  fouls: Map<ID, number>
+  /** Scoring events: goals, or baskets. */
   goalCount: number
+  /** Our score — the same as `goalCount` unless baskets are worth more than one. */
+  score: number
   /** Game-clock second each surviving event happened at. */
   timeOf: Map<string, number>
   /** Events that survived voiding, in order. */
@@ -101,7 +107,10 @@ export function deriveLive(
     goals: new Map(),
     assists: new Map(),
     saves: new Map(),
+    points: new Map(),
+    fouls: new Map(),
     goalCount: 0,
+    score: 0,
     timeOf: new Map(),
     live: [],
   }
@@ -230,10 +239,20 @@ export function deriveLive(
         break
       }
 
-      case 'GOAL':
+      case 'GOAL': {
+        const pts = e.body.points ?? 1
         state.goalCount += 1
-        if (e.body.playerId) bump(state.goals, e.body.playerId)
+        state.score += pts
+        if (e.body.playerId) {
+          bump(state.goals, e.body.playerId)
+          state.points.set(e.body.playerId, (state.points.get(e.body.playerId) ?? 0) + pts)
+        }
         if (e.body.assistId) bump(state.assists, e.body.assistId)
+        break
+      }
+
+      case 'FOUL':
+        bump(state.fouls, e.body.playerId)
         break
 
       case 'SAVE':

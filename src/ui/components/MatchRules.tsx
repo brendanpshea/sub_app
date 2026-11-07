@@ -1,4 +1,5 @@
-import type { GameRules } from '@/domain/types'
+import type { GameRules, SportId } from '@/domain/types'
+import { sportOf } from '@/domain/sports'
 import { gameLengthSec } from '@/domain/types'
 import { buildShiftGrid } from '@/domain/fairness'
 import {
@@ -9,29 +10,16 @@ import {
   shiftsPerPeriod,
 } from '@/domain/planner'
 
-interface Preset {
-  label: string
-  periodCount: number
-  periodMinutes: number
-}
-
-/** The formats youth soccer actually plays. */
-const PRESETS: Preset[] = [
-  { label: '4 × 10', periodCount: 4, periodMinutes: 10 },
-  { label: '4 × 12', periodCount: 4, periodMinutes: 12 },
-  { label: '2 × 20', periodCount: 2, periodMinutes: 20 },
-  { label: '2 × 25', periodCount: 2, periodMinutes: 25 },
-  { label: '2 × 30', periodCount: 2, periodMinutes: 30 },
-  { label: '4 × 15', periodCount: 4, periodMinutes: 15 },
-]
-
 export default function MatchRules({
   rules,
+  sport: sportId,
   onChange,
 }: {
   rules: GameRules
+  sport?: SportId
   onChange: (patch: Partial<GameRules>) => void
 }) {
+  const sport = sportOf(sportId)
   const totalMin = gameLengthSec(rules) / 60
   const shifts = buildShiftGrid(rules)
   const perPeriod = shifts.filter((s) => s.period === 1).length
@@ -77,7 +65,7 @@ export default function MatchRules({
       <div className="card pad">
         <div className="field-label">Format</div>
         <div className="chips">
-          {PRESETS.map((p) => (
+          {sport.presets.map((p) => (
             <button
               key={p.label}
               type="button"
@@ -114,31 +102,33 @@ export default function MatchRules({
             onChange={(v) => onChange({ periodMinutes: v })}
           />
           <Stepper
-            label="Players on the field"
+            label={`Players on the ${sport.surface === 'court' ? 'court' : 'field'}`}
             value={rules.playersOnField}
-            min={3}
-            max={11}
+            min={sport.playersOnField.min}
+            max={sport.playersOnField.max}
             onChange={(v) => onChange({ playersOnField: v })}
           />
-          <div style={{ marginBottom: '0.9rem' }}>
-            <div className="field-label">Keeper stays in goal for</div>
-            <div className="chips">
-              {keeperChoices.map((c) => (
-                <button
-                  key={c.label}
-                  type="button"
-                  className="chipbtn"
-                  aria-pressed={keeperMinutes === c.minutes}
-                  onClick={() => onChange({ gkMinMinutes: c.minutes })}
-                >
-                  {c.label}
-                </button>
-              ))}
+          {sport.hasKeeper ? (
+            <div style={{ marginBottom: '0.9rem' }}>
+              <div className="field-label">Keeper stays in goal for</div>
+              <div className="chips">
+                {keeperChoices.map((c) => (
+                  <button
+                    key={c.label}
+                    type="button"
+                    className="chipbtn"
+                    aria-pressed={keeperMinutes === c.minutes}
+                    onClick={() => onChange({ gkMinMinutes: c.minutes })}
+                  >
+                    {c.label}
+                  </button>
+                ))}
+              </div>
+              <div className="dim" style={{ marginTop: '0.3rem' }}>
+                {keeperHint}
+              </div>
             </div>
-            <div className="dim" style={{ marginTop: '0.3rem' }}>
-              {keeperHint}
-            </div>
-          </div>
+          ) : null}
 
           <Stepper
             label="Most shifts in a row"

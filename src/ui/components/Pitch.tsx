@@ -22,13 +22,27 @@ interface Props {
 }
 
 export default function Pitch({ formation, fill, onSlotClick, alwaysLabel }: Props) {
+  const court = formation.sport === 'basketball'
   return (
-    <div className="pitch">
-      <div className="lines" />
-      <div className="halfway" />
-      <div className="circle" />
-      <div className="box own" />
-      <div className="box opp" />
+    <div className={court ? 'pitch court' : 'pitch'}>
+      {court ? (
+        // The half court the team attacks, basket at the top.
+        <>
+          <div className="lines" />
+          <div className="arc" />
+          <div className="key" />
+          <div className="ft" />
+          <div className="hoop" />
+        </>
+      ) : (
+        <>
+          <div className="lines" />
+          <div className="halfway" />
+          <div className="circle" />
+          <div className="box own" />
+          <div className="box opp" />
+        </>
+      )}
       {formation.slots.map((s) => {
         const f = fill?.[s.id]
         const isGk = s.requiredRole === 'GK'

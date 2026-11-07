@@ -20,7 +20,7 @@ export default function TeamRules() {
     <>
       <AppBar title="Match rules" sub={team.name} back={`/team/${teamId}`} />
       <main>
-        <MatchRules rules={team.rules} onChange={(p) => void patch(p)} />
+        <MatchRules rules={team.rules} sport={team.sport} onChange={(p) => void patch(p)} />
         <div className="dim" style={{ marginTop: '1rem', padding: '0 0.2rem' }}>
           New games start from these. Changing them here leaves games already
           created alone.

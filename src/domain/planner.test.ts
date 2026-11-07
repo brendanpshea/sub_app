@@ -5,7 +5,8 @@ import {
   replanFrom,
   type PlannerInput,
 } from './planner'
-import { BUILT_IN_FORMATIONS } from './formations'
+import { BUILT_IN_FORMATIONS, formationsFor } from './formations'
+import { SPORTS } from './sports'
 import { buildShiftGrid } from './fairness'
 import {
   DEFAULT_RULES,
@@ -660,5 +661,37 @@ describe('preferred positions', () => {
       ),
     ).length
     expect(upFront).toBeGreaterThan(0)
+  })
+})
+
+describe('basketball', () => {
+  // No keeper, five on the court, and the same rotation for everyone.
+  const rules: GameRules = { ...SPORTS.basketball.defaultRules, balance: 0 }
+
+  for (const f of formationsFor('basketball')) {
+    it(`fills every position of ${f.name} with an even share`, () => {
+      const roster = squad(f.slots.length + 3)
+      const plan = generatePlan(input(roster, { rules, formation: f }))
+      expect(plan.warnings).toEqual([])
+      for (const shift of plan.shifts) {
+        const ids = f.slots.map((sl) => shift.assignments[sl.id])
+        expect(ids.every(Boolean)).toBe(true)
+        expect(new Set(ids).size).toBe(f.slots.length)
+      }
+      // Within one shift of level.
+      const first = buildShiftGrid(rules)[0]!
+      const shiftSec = first.endSec - first.startSec
+      expect(plan.outfieldSpreadSec).toBeLessThanOrEqual(shiftSec)
+    })
+  }
+
+  it('offers only basketball shapes to a basketball team, and the reverse', () => {
+    expect(formationsFor('basketball').every((f) => !f.slots.some((s) => s.requiredRole))).toBe(
+      true,
+    )
+    expect(formationsFor('soccer').every((f) => f.sport === 'soccer')).toBe(true)
+    expect(
+      formationsFor('basketball').some((f) => f.id === SPORTS.basketball.defaultFormationId),
+    ).toBe(true)
   })
 })
